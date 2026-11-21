@@ -31,7 +31,7 @@ const sandbox = {
   requestAnimationFrame: fn => { scheduled = fn; }
 };
 let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'), 'utf8');
-source = source.replace(/\}\)\(\);\s*$/, 'globalThis.inspect = () => ({ tracks, active, distance, direction, draft, pointerId, width, height }); globalThis.testing = { formation, carPoses, smooth, sample, measure }; })();');
+source = source.replace(/\}\)\(\);\s*$/, 'globalThis.inspect = () => ({ tracks, active, distance, direction, draft, pointerId, width, height, effects }); globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS }; })();');
 vm.runInNewContext(source, sandbox);
 const state = () => sandbox.inspect();
 const { formation, carPoses, smooth, sample, measure } = sandbox.testing;
@@ -164,6 +164,7 @@ for (let car = 0; car < 4; car++) {
 }
 
 for (const length of [24, 69, 70, 100, 139, 140, 210, 280]) {
+  clear(); // Independent short-track fixtures, not extensions of previous cases.
   draw([[50, 200], [50 + length, 200]]);
   track = state().active;
   const f = formation(track);
@@ -208,3 +209,119 @@ windowEvents.resize();
 assert.equal(JSON.stringify(state().active.points), smallPoints);
 tick();
 console.log('PASS v0.1.1: regression checks; four cars; sharp curves; loop seams; continuous reversal; short-track formation; smoothing; 20 resize round-trips; mixed source viewports; resize during drawing.');
+
+// v0.2.0: finish without advancing time to isolate join continuity from motion.
+function stroke(points) {
+  listeners.pointerdown(event(...points[0]));
+  points.slice(1).forEach(p => listeners.pointermove(event(...p)));
+  listeners.pointerup(event(...points.at(-1)));
+}
+function setupLine() {
+  clear(); rect = { left: 17, top: 29, width: 1200, height: 900 }; windowEvents.resize();
+  stroke([[300, 300], [800, 300]]); tick(30);
+}
+function currentPoses() { return carPoses(state().active, state().distance); }
+function unchanged(before) {
+  const after = currentPoses();
+  assert.equal(after.length, before.length);
+  after.forEach((p, i) => { near(p.x, before[i].x, 1e-6); near(p.y, before[i].y, 1e-6); });
+}
+for (const extension of [
+  [[802, 302], [1000, 400]], // start at old end
+  [[302, 302], [100, 400]], // start at old start
+  [[1000, 400], [802, 302]], // end at old end
+  [[100, 400], [302, 302]] // end at old start
+]) {
+  setupLine(); const before = currentPoses(); const heading = state().direction;
+  stroke(extension);
+  assert.equal(state().tracks.length, 1); assert.ok(state().active.length > 650);
+  unchanged(before); assert.equal(state().direction, heading);
+  assert.equal(state().effects.length, 1);
+  tick(500); assert.equal(state().effects.length, 0);
+}
+
+setupLine();
+const radius = sandbox.testing.CONNECT_RADIUS;
+assert.ok(sandbox.testing.endpointNear({ x: 800 + radius, y: 300 }));
+assert.equal(sandbox.testing.endpointNear({ x: 800 + radius + .01, y: 300 }), null);
+stroke([[800 + radius + 1, 300], [1100, 300]]);
+assert.equal(state().tracks.length, 2); // Outside tolerance stays independent.
+near(state().active.points[0].x, 829);
+
+setupLine();
+for (let end = 850; end <= 1100; end += 50) {
+  const before = currentPoses(); stroke([[end - 50, 300], [end, 300]]);
+  unchanged(before); assert.equal(state().tracks.length, 1);
+}
+near(state().active.length, 800);
+tick(600); assert.ok(currentPoses().some(p => p.x > 800));
+
+// Closing a running open track keeps poses and both forward/reverse direction.
+for (const reverse of [false, true]) for (const drawReverse of [false, true]) {
+  setupLine(); if (reverse) tick(210);
+  const before = currentPoses(), heading = state().direction;
+  const closing = [[802, 300], [1000, 550], [100, 550], [300, 302]];
+  stroke(drawReverse ? closing.reverse() : closing);
+  assert.equal(state().active.closed, true); unchanged(before);
+  assert.equal(state().direction, heading);
+  const start = state().distance; tick();
+  near(state().distance, (start + heading * 1.12 + state().active.length) % state().active.length);
+  tick(1500); assert.ok(Number.isFinite(state().distance));
+}
+
+// Two existing tracks can be joined in any endpoint orientation; active is the second.
+for (const leftEnd of [0, 1]) for (const rightEnd of [0, 1]) {
+  clear();
+  stroke([[100, 150], [450, 150]]);
+  stroke([[700, 600], [1100, 600]]); tick(20);
+  const before = currentPoses();
+  stroke([[leftEnd ? 450 : 100, 150], [550, 400], [rightEnd ? 1100 : 700, 600]]);
+  assert.equal(state().tracks.length, 1); unchanged(before);
+  tick(100);
+}
+
+// Joining an inactive line must not teleport the running train away from its line.
+setupLine(); const inactive = state().active;
+stroke([[100, 700], [1100, 700]]); const running = state().active, beforeOther = currentPoses();
+stroke([[800, 300], [1000, 400]]);
+assert.equal(state().active, running); unchanged(beforeOther);
+assert.ok(!state().tracks.includes(inactive)); assert.equal(state().tracks.length, 2);
+
+// Equal nearest endpoints and reuse of the same endpoint are ambiguous: independent.
+clear(); stroke([[100, 100], [400, 100]]); stroke([[100, 140], [400, 140]]);
+stroke([[400, 120], [600, 120]]); assert.equal(state().tracks.length, 3);
+clear(); stroke([[100, 100], [400, 100]]);
+stroke([[400, 100], [500, 200], [400, 100]]); assert.equal(state().tracks.length, 2);
+
+// Short-track extensions keep the existing small consist instead of spawning cars in place.
+clear(); stroke([[100, 100], [124, 100]]); const tiny = currentPoses();
+stroke([[124, 100], [700, 200]]); unchanged(tiny);
+assert.equal(formation(state().active).count, 1); tick(300);
+
+// Drawing, cancellation, and rotation while train is moving.
+setupLine(); listeners.pointerdown(event(800, 300)); listeners.pointermove(event(900, 300));
+const during = state().distance; tick(20); assert.notEqual(state().distance, during);
+listeners.pointercancel(event(900, 300)); assert.equal(state().tracks.length, 1);
+const beforeRotate = state().active.source;
+rect = { left: 0, top: 0, width: 600, height: 450 }; windowEvents.resize();
+const beforeJoin = currentPoses(); stroke([[400, 150], [550, 150]]); unchanged(beforeJoin);
+assert.notEqual(state().active.source, beforeRotate);
+const joinedPoints = JSON.stringify(state().active.points);
+for (let i = 0; i < 10; i++) {
+  rect = { left: 0, top: 0, width: 450, height: 600 }; windowEvents.resize();
+  rect = { left: 0, top: 0, width: 600, height: 450 }; windowEvents.resize();
+}
+assert.equal(JSON.stringify(state().active.points), joinedPoints);
+clear(); assert.equal(state().effects.length, 0); tick();
+// A start snap chooses the nearer candidate, not insertion order.
+clear(); stroke([[100, 100], [400, 100]]); const farther = state().active;
+stroke([[100, 140], [400, 140]]); const nearer = state().active;
+assert.equal(sandbox.testing.endpointNear({ x: 400, y: 125 }).track, nearer);
+stroke([[400, 125], [650, 200]]);
+assert.ok(state().tracks.includes(farther)); assert.ok(!state().tracks.includes(nearer));
+// No branch attachment at the middle, and closed routes have no eligible endpoints.
+setupLine(); stroke([[550, 300], [550, 600]]); assert.equal(state().tracks.length, 2);
+clear(); stroke([[200, 200], [500, 200], [500, 500], [200, 500], [200, 200]]);
+assert.equal(sandbox.testing.endpointNear({ x: 200, y: 200 }), null);
+stroke([[200, 200], [50, 50]]); assert.equal(state().tracks.length, 2);
+console.log('PASS v0.2.0: all four endpoint directions, radius boundary, repeated extension, closed joins in both travel directions, merging two tracks, inactive joins, ambiguous fallback, short consist, moving/cancelled input, rotation and effects.');

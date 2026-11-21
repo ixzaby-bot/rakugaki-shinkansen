@@ -9,6 +9,8 @@
   const tracks = [];
   const SPEED = 70; // CSS pixels per second
   const MIN_LENGTH = 24;
+  const CONNECT_RADIUS = 28; // CSS px; endpoint snapping tolerance
+  const effects = [];
   let width = 0, height = 0, dpr = 1;
   let draft = null, pointerId = null, active = null;
   let draftWidth = 0, draftHeight = 0, draftTrack = null;
@@ -72,11 +74,120 @@
 
   function formation(track) {
     const originalLength = track.source.length;
-    const count = Math.max(1, Math.min(4, Math.floor(originalLength / 70)));
-    const scale = Math.min(1, originalLength / 100) * track.scale;
+    const count = track.source.train?.count || Math.max(1, Math.min(4, Math.floor(originalLength / 70)));
+    const scale = (track.source.train?.size || Math.min(1, originalLength / 100)) * track.scale;
     const spacing = 66 * scale, margin = 34 * scale;
     const travel = track.closed ? track.length : Math.max(0, track.length - 2 * margin - (count - 1) * spacing);
     return { count, scale, spacing, margin, travel };
+  }
+
+  function endpointNear(p) {
+    const candidates = [];
+    tracks.filter(t => !t.closed).forEach(track => {
+      for (const end of [0, 1]) {
+        const point = track.points[end ? track.points.length - 1 : 0];
+        const gap = separation(p, point);
+        if (gap <= CONNECT_RADIUS) candidates.push({ track, end, point, gap });
+      }
+    });
+    candidates.sort((a, b) => a.gap - b.gap);
+    if (candidates.length > 1 && candidates[1].gap - candidates[0].gap < .5) return { ambiguous: true };
+    return candidates[0] || null;
+  }
+
+  // Only the new stroke is blended; existing track coordinates stay untouched.
+  function blendJoin(points, hit, atStart) {
+    if (!hit) return points;
+    let path = atStart ? points.slice() : points.slice().reverse();
+    const route = measure(path), span = Math.min(16, route.length / 3);
+    if (span < .01) return points;
+    const p = hit.point;
+    const inner = sample(hit.track, hit.end ? hit.track.length - 8 : 8);
+    const norm = separation(inner, p) || 1;
+    const q = sample(route, span), next = sample(route, Math.min(route.length, span + 4));
+    const norm2 = separation(q, next) || 1;
+    const handle = Math.min(span / 3, separation(p, q) / 2);
+    const a = { x: p.x + (p.x - inner.x) / norm * handle, y: p.y + (p.y - inner.y) / norm * handle };
+    const b = { x: q.x - (next.x - q.x) / norm2 * handle, y: q.y - (next.y - q.y) / norm2 * handle };
+    const curve = [p];
+    for (let i = 1; i <= 12; i++) {
+      const t = i / 12, u = 1 - t;
+      curve.push({ x: u ** 3 * p.x + 3 * u * u * t * a.x + 3 * u * t * t * b.x + t ** 3 * q.x,
+        y: u ** 3 * p.y + 3 * u * u * t * a.y + 3 * u * t * t * b.y + t ** 3 * q.y });
+    }
+    path = curve.concat(path.filter((_, i) => route.cumulative[i] > span));
+    return atStart ? path : path.reverse();
+  }
+
+  function commitStroke() {
+    const v = view(draftWidth, draftHeight);
+    const raw = draft.map(p => ({ x: p.x * v.scale + v.x, y: p.y * v.scale + v.y }));
+    const first = endpointNear(raw[0]), last = endpointNear(raw[raw.length - 1]);
+    const invalid = first?.ambiguous || last?.ambiguous ||
+      (first && last && first.track === last.track && first.end === last.end);
+    if (invalid || (!first && !last)) {
+      const closed = measure(draft).length >= 100 && separation(draft[0], draft[draft.length - 1]) <= 24;
+      const track = project(smooth(draft, closed), draftWidth, draftHeight);
+      tracks.push(track); active = track; distance = 0; direction = 1;
+      status.textContent = closed ? 'つながった！ ぐるぐる はしるよ' : 'せんろの はしから つなげるよ';
+      return;
+    }
+    if (first) raw[0] = first.point;
+    if (last) raw[raw.length - 1] = last.point;
+    let extension = smooth(raw).points;
+    extension = blendJoin(extension, first, true);
+    extension = blendJoin(extension, last, false);
+    const closed = !!(first && last && first.track === last.track);
+    const used = [...new Set([first?.track, last?.track].filter(Boolean))];
+    const preserving = used.includes(active);
+    const old = active, oldFormation = old && formation(old);
+    let reversed = false, points = [];
+    if (first) {
+      points = first.end ? first.track.points.slice() : first.track.points.slice().reverse();
+      if (first.track === active) reversed = !first.end;
+    }
+    points = points.length ? points.concat(extension.slice(1)) : extension;
+    if (last && !closed) {
+      const tail = last.end ? last.track.points.slice().reverse() : last.track.points.slice();
+      points = points.concat(tail.slice(1));
+      if (last.track === active) reversed = !!last.end;
+    }
+    if (closed) points.pop(); // measure() adds the shared closing endpoint once.
+    if (preserving && reversed) points.reverse();
+    const source = measure(points, closed);
+    // Keep the running consist's count and size, including on short-track extensions.
+    const baseFormation = preserving ? oldFormation : formation(used[0]);
+    source.train = { count: baseFormation.count, size: baseFormation.scale };
+    const track = project(source, width, height);
+    if (preserving) {
+      const index = points.indexOf(old.points[0]);
+      const firstCarDistance = source.cumulative[index] + (old.closed ? 0 : oldFormation.margin) + distance;
+      distance = firstCarDistance - (closed ? 0 : formation(track).margin);
+      if (closed) distance = ((distance % track.length) + track.length) % track.length;
+      else distance = Math.max(0, Math.min(formation(track).travel, distance));
+      active = track;
+    }
+    for (const previous of used) tracks.splice(tracks.indexOf(previous), 1);
+    tracks.push(track);
+    for (const hit of [first, last].filter(Boolean)) effects.push({ ...hit.point, width, height, age: 0 });
+    status.textContent = closed ? 'つながった！ ぐるぐる はしるよ' : 'つながった！ もっと はしれるよ';
+  }
+
+  function drawEffects(dt) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const effect = effects[i]; effect.age += dt;
+      if (effect.age >= .6) { effects.splice(i, 1); continue; }
+      const v = view(effect.width, effect.height), radius = 8 + effect.age * 28;
+      ctx.save(); ctx.translate(effect.x * v.scale + v.x, effect.y * v.scale + v.y);
+      ctx.globalAlpha = 1 - effect.age / .6; ctx.strokeStyle = '#eeb83e'; ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let j = 0; j < 8; j++) {
+        const angle = j * Math.PI / 4;
+        ctx.moveTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+        ctx.lineTo(Math.cos(angle) * (radius + 6), Math.sin(angle) * (radius + 6));
+      }
+      ctx.stroke(); ctx.restore();
+    }
   }
 
   function carPoses(track, offset) {
@@ -204,12 +315,8 @@
     if (event.pointerId !== pointerId) return;
     if (!cancelled) append(event);
     if (!cancelled && draft.length > 1) {
-      let track = measure(draft);
-      if (track.length >= MIN_LENGTH) {
-        const closed = track.length >= 100 && separation(draft[0], draft[draft.length - 1]) <= 24;
-        track = project(smooth(draft, closed), draftWidth, draftHeight);
-        tracks.push(track); active = track; distance = 0; direction = 1; railsDirty = true;
-        status.textContent = closed ? 'つながった！ ぐるぐる はしるよ' : 'さいごの せんろを いったり きたり';
+      if (measure(draft).length >= MIN_LENGTH) {
+        commitStroke(); railsDirty = true;
       } else status.textContent = 'もうすこし ながく かいてみよう';
     }
     const released = pointerId;
@@ -237,9 +344,10 @@
   document.getElementById('clear').addEventListener('click', () => {
     const released = pointerId;
     tracks.length = 0; active = null; draft = null; draftTrack = null; pointerId = null; distance = 0;
+    effects.length = 0;
     if (released !== null && canvas.hasPointerCapture(released)) canvas.releasePointerCapture(released);
     railsDirty = true; hint.classList.remove('hidden');
-    status.textContent = 'さいごに かいた せんろを はしるよ';
+    status.textContent = 'せんろの はしから つなげるよ';
   });
   window.addEventListener('resize', resize);
   document.addEventListener('visibilitychange', () => { lastTime = null; });
@@ -260,7 +368,7 @@
     }
     if (active && active.length > 0) {
       const { travel } = formation(active);
-      if (active.closed) distance = (distance + SPEED * dt) % travel;
+      if (active.closed) distance = ((distance + direction * SPEED * dt) % travel + travel) % travel;
       else if (!travel) distance = 0;
       else {
         // Triangle-wave phase preserves overshoot even on a very short resized track.
@@ -271,6 +379,7 @@
       }
       drawFormation(active);
     }
+    drawEffects(dt);
     requestAnimationFrame(frame);
   }
   resize();
