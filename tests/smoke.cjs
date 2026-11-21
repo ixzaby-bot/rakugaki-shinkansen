@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 let rect = { left: 17, top: 29, width: 390, height: 844 };
 let scheduled;
+let animationRequests = 0;
 const listeners = {};
 const windowEvents = {};
 const documentEvents = {};
@@ -28,10 +29,15 @@ const sandbox = {
     createElement: () => ({ getContext: () => context }),
     addEventListener: (name, fn) => { documentEvents[name] = fn; } },
   window: { devicePixelRatio: 2, addEventListener: (name, fn) => { windowEvents[name] = fn; } },
-  requestAnimationFrame: fn => { scheduled = fn; }
+  requestAnimationFrame: fn => { scheduled = fn; animationRequests++; }
 };
 let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'), 'utf8');
-source = source.replace(/\}\)\(\);\s*$/, 'globalThis.inspect = () => ({ tracks, active, distance, direction, draft, pointerId, width, height, effects }); globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS }; })();');
+// Legacy single-route assertions inspect the most recently created train only.
+source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
+  const train = trains[trains.length - 1];
+  return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
+    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects };
+}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS }; })();`);
 vm.runInNewContext(source, sandbox);
 const state = () => sandbox.inspect();
 const { formation, carPoses, smooth, sample, measure } = sandbox.testing;
@@ -269,23 +275,26 @@ for (const reverse of [false, true]) for (const drawReverse of [false, true]) {
   tick(1500); assert.ok(Number.isFinite(state().distance));
 }
 
-// Two existing tracks can be joined in any endpoint orientation; active is the second.
+// New specification: a bridge between different tracks is independent in every orientation.
 for (const leftEnd of [0, 1]) for (const rightEnd of [0, 1]) {
   clear();
   stroke([[100, 150], [450, 150]]);
   stroke([[700, 600], [1100, 600]]); tick(20);
-  const before = currentPoses();
+  const before = state().trains.map(t => ({ ...t }));
+  const sources = state().tracks.map(t => t.source);
   stroke([[leftEnd ? 450 : 100, 150], [550, 400], [rightEnd ? 1100 : 700, 600]]);
-  assert.equal(state().tracks.length, 1); unchanged(before);
+  assert.equal(state().tracks.length, 3); assert.equal(state().trains.length, 3);
+  before.forEach((t, i) => { near(state().trains[i].distance, t.distance); assert.equal(state().trains[i].id, t.id); });
+  sources.forEach((s, i) => assert.equal(state().tracks[i].source, s));
   tick(100);
 }
 
-// Joining an inactive line must not teleport the running train away from its line.
+// Extending an older line leaves the other train's route and position unchanged.
 setupLine(); const inactive = state().active;
 stroke([[100, 700], [1100, 700]]); const running = state().active, beforeOther = currentPoses();
 stroke([[800, 300], [1000, 400]]);
 assert.equal(state().active, running); unchanged(beforeOther);
-assert.ok(!state().tracks.includes(inactive)); assert.equal(state().tracks.length, 2);
+assert.ok(state().tracks.includes(inactive)); assert.equal(state().tracks.length, 2);
 
 // Equal nearest endpoints and reuse of the same endpoint are ambiguous: independent.
 clear(); stroke([[100, 100], [400, 100]]); stroke([[100, 140], [400, 140]]);
@@ -318,10 +327,125 @@ clear(); stroke([[100, 100], [400, 100]]); const farther = state().active;
 stroke([[100, 140], [400, 140]]); const nearer = state().active;
 assert.equal(sandbox.testing.endpointNear({ x: 400, y: 125 }).track, nearer);
 stroke([[400, 125], [650, 200]]);
-assert.ok(state().tracks.includes(farther)); assert.ok(!state().tracks.includes(nearer));
+assert.ok(state().tracks.includes(farther)); assert.ok(state().tracks.includes(nearer));
+assert.equal(state().tracks.length, 2); assert.ok(nearer.length > 300);
 // No branch attachment at the middle, and closed routes have no eligible endpoints.
 setupLine(); stroke([[550, 300], [550, 600]]); assert.equal(state().tracks.length, 2);
 clear(); stroke([[200, 200], [500, 200], [500, 500], [200, 500], [200, 200]]);
 assert.equal(sandbox.testing.endpointNear({ x: 200, y: 200 }), null);
 stroke([[200, 200], [50, 50]]); assert.equal(state().tracks.length, 2);
-console.log('PASS v0.2.0: all four endpoint directions, radius boundary, repeated extension, closed joins in both travel directions, merging two tracks, inactive joins, ambiguous fallback, short consist, moving/cancelled input, rotation and effects.');
+console.log('PASS endpoint regression: four directions, radius boundary, repeated extension, closed joins, two-track bridge fallback, older-route extension, ambiguity, short consist, moving/cancelled input, rotation and effects.');
+
+// T-01..T-03, T-11: one independent route adds one train; existing trains keep moving.
+clear(); rect = { left: 13, top: 21, width: 1200, height: 900 }; windowEvents.resize();
+function independentLine(i) { stroke([[100, 80 + i * 75], [1000, 80 + i * 75]]); }
+function posesFor(train) { return carPoses(state().tracks.find(t => t.id === train.trackId), train.distance, train); }
+function verifyLinks() {
+  assert.equal(new Set(state().tracks.map(t => t.id)).size, state().tracks.length);
+  assert.equal(new Set(state().trains.map(t => t.id)).size, state().trains.length);
+  assert.equal(new Set(state().trains.map(t => t.trackId)).size, state().tracks.length);
+  state().trains.forEach(train => {
+    const route = state().tracks.find(t => t.id === train.trackId);
+    assert.ok(route); assert.equal(train.type, 'hayabusa');
+    assert.ok(train.distance >= 0 && train.distance <= formation(route, train).travel);
+    posesFor(train).forEach(p => assert.ok(Number.isFinite(p.x + p.y + p.angle)));
+  });
+}
+for (let i = 0; i < 5; i++) {
+  const existing = state().trains.map(t => ({ id: t.id, distance: t.distance }));
+  independentLine(i);
+  assert.equal(state().trains.length, i + 1); assert.equal(state().tracks.length, i + 1);
+  existing.forEach((old, j) => { assert.equal(state().trains[j].id, old.id); near(state().trains[j].distance, old.distance); });
+  tick(2); verifyLinks();
+}
+const runningBefore = state().trains.map(t => t.distance);
+listeners.pointerdown(event(100, 700)); listeners.pointermove(event(600, 700));
+tick(10);
+runningBefore.forEach((d, i) => assert.ok(state().trains[i].distance > d));
+listeners.pointercancel(event(600, 700)); assert.equal(state().trains.length, 5);
+
+// T-04..T-10: all four endpoint patterns preserve IDs/poses of every train.
+for (const extension of [
+  [[1002, 82], [1150, 100]], [[102, 157], [40, 210]],
+  [[1150, 260], [1002, 232]], [[40, 350], [102, 307]]
+]) {
+  const allBefore = state().trains.map(t => ({ id: t.id, trackId: t.trackId, direction: t.direction, poses: posesFor(t) }));
+  stroke(extension); assert.equal(state().trains.length, 5);
+  allBefore.forEach((old, i) => {
+    const train = state().trains[i];
+    assert.equal(train.id, old.id); assert.equal(train.trackId, old.trackId); assert.equal(train.direction, old.direction);
+    posesFor(train).forEach((p, j) => { near(p.x, old.poses[j].x, 1e-6); near(p.y, old.poses[j].y, 1e-6); });
+  });
+}
+verifyLinks();
+
+// T-12: tap/short input generates neither a route nor a train, including by an endpoint.
+const beforeShort = state().trains.length;
+stroke([[100, 380], [101, 380]]); assert.equal(state().trains.length, beforeShort);
+stroke([[20, 700]]); assert.equal(state().trains.length, beforeShort);
+
+// T-17/T-18: preserve every train, not only the last one, over 20 rotations.
+const beforeRotation = state().tracks.map(t => ({ id: t.id, source: t.source, points: JSON.stringify(t.points) }));
+const trainsBeforeRotation = state().trains.map(t => ({ ...t }));
+for (let i = 0; i < 20; i++) {
+  rect = { left: 0, top: 0, width: 390, height: 844 }; windowEvents.resize(); verifyLinks();
+  rect = { left: 13, top: 21, width: 1200, height: 900 }; windowEvents.resize();
+}
+beforeRotation.forEach((old, i) => {
+  assert.equal(state().tracks[i].id, old.id); assert.equal(state().tracks[i].source, old.source);
+  assert.equal(JSON.stringify(state().tracks[i].points), old.points);
+});
+trainsBeforeRotation.forEach((old, i) => {
+  near(state().trains[i].distance, old.distance); assert.equal(state().trains[i].direction, old.direction);
+  assert.equal(state().trains[i].id, old.id); assert.equal(state().trains[i].trackId, old.trackId);
+});
+
+// ID lookup is independent of array insertion order; speed is per train.
+state().tracks.reverse(); state().trains.reverse();
+state().trains[0].speed = 35;
+const ordered = state().trains.map(t => ({ id: t.id, distance: t.distance, speed: t.speed }));
+const requestsBefore = animationRequests;
+tick(10);
+assert.equal(animationRequests - requestsBefore, 10); // One shared loop, not one per train.
+ordered.forEach((old, i) => near(state().trains[i].distance - old.distance, old.speed * .16));
+verifyLinks();
+
+// T-15/T-16: clear all runtime state, then generate and run again.
+listeners.pointerdown(event(100, 700)); listeners.pointermove(event(700, 700)); clear();
+assert.equal(state().tracks.length, 0); assert.equal(state().trains.length, 0);
+assert.equal(state().draft, null); assert.equal(state().pointerId, null); assert.equal(state().effects.length, 0);
+independentLine(0); tick(5); assert.equal(state().trains.length, 1); assert.ok(state().trains[0].distance > 0);
+
+// T-19: multiple loops wrap independently, retaining their direction.
+clear();
+for (let i = 0; i < 5; i++) {
+  const loop = Array.from({ length: 61 }, (_, j) => [120 + i * 230 + 80 * Math.cos(j * Math.PI / 30), 300 + 80 * Math.sin(j * Math.PI / 30)]);
+  stroke(loop);
+}
+assert.equal(state().trains.length, 5); assert.ok(state().tracks.every(t => t.closed));
+state().trains[1].direction = -1;
+const loopsBefore = state().trains.map(t => t.distance);
+tick(900);
+state().trains.forEach((t, i) => {
+  const route = state().tracks.find(r => r.id === t.trackId);
+  near(t.distance, ((loopsBefore[i] + t.direction * t.speed * .016 * 899) % route.length + route.length) % route.length, 1e-6);
+});
+verifyLinks();
+
+// T-20 + load: ten independent trains all reverse; timings exclude real Canvas rasterization.
+clear(); for (let i = 0; i < 10; i++) independentLine(i);
+assert.equal(state().trains.length, 10); tick(120);
+const flips = new Map(state().trains.map(t => [t.id, 0]));
+const loadStart = performance.now();
+for (let i = 0; i < 1600; i++) {
+  const directions = state().trains.map(t => t.direction); tick();
+  state().trains.forEach((t, j) => { if (t.direction !== directions[j]) flips.set(t.id, flips.get(t.id) + 1); });
+}
+const loadMs = performance.now() - loadStart;
+assert.ok([...flips.values()].every(count => count >= 2)); verifyLinks();
+
+// A small wiggle between a short route's ends must not close it accidentally.
+clear(); stroke([[100, 100], [124, 100]]); const shortRoute = state().tracks[0];
+stroke([[124, 100], [124, 110], [100, 110], [100, 100]]);
+assert.equal(shortRoute.closed, false); assert.equal(state().tracks.length, 2); verifyLinks();
+console.log(`PASS multi-train T-01..T-20: IDs, 1/2/5 trains, live input, continuity, no merging, 20 rotations, all clear, multiple loops and reversals; 10 trains × 1600 mock frames: ${loadMs.toFixed(1)} ms (not browser FPS).`);

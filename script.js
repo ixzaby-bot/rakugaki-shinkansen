@@ -7,14 +7,17 @@
   const hint = document.getElementById('hint');
   const status = document.getElementById('status');
   const tracks = [];
+  const trains = [];
+  const tracksById = new Map();
+  let nextTrackId = 1, nextTrainId = 1;
   const SPEED = 70; // CSS pixels per second
   const MIN_LENGTH = 24;
   const CONNECT_RADIUS = 28; // CSS px; endpoint snapping tolerance
   const effects = [];
   let width = 0, height = 0, dpr = 1;
-  let draft = null, pointerId = null, active = null;
+  let draft = null, pointerId = null;
   let draftWidth = 0, draftHeight = 0, draftTrack = null;
-  let distance = 0, direction = 1, lastTime = null, railsDirty = true;
+  let lastTime = null, railsDirty = true;
 
   const separation = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
 
@@ -72,10 +75,10 @@
       source, baseWidth, baseHeight, scale: v.scale };
   }
 
-  function formation(track) {
+  function formation(track, train = trains.find(item => item.trackId === track.id)) {
     const originalLength = track.source.length;
-    const count = track.source.train?.count || Math.max(1, Math.min(4, Math.floor(originalLength / 70)));
-    const scale = (track.source.train?.size || Math.min(1, originalLength / 100)) * track.scale;
+    const count = train?.carCount || Math.max(1, Math.min(4, Math.floor(originalLength / 70)));
+    const scale = (train?.baseSize || Math.min(1, originalLength / 100)) * track.scale;
     const spacing = 66 * scale, margin = 34 * scale;
     const travel = track.closed ? track.length : Math.max(0, track.length - 2 * margin - (count - 1) * spacing);
     return { count, scale, spacing, margin, travel };
@@ -123,13 +126,16 @@
     const v = view(draftWidth, draftHeight);
     const raw = draft.map(p => ({ x: p.x * v.scale + v.x, y: p.y * v.scale + v.y }));
     const first = endpointNear(raw[0]), last = endpointNear(raw[raw.length - 1]);
+    const closed = !!(first?.track && last?.track && first.track === last.track && first.end !== last.end);
+    const bounds = raw.reduce((box, p) => ({ minX: Math.min(box.minX, p.x), maxX: Math.max(box.maxX, p.x),
+      minY: Math.min(box.minY, p.y), maxY: Math.max(box.maxY, p.y) }),
+    { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+    const extent = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
     const invalid = first?.ambiguous || last?.ambiguous ||
-      (first && last && first.track === last.track && first.end === last.end);
+      (first && last && (first.track !== last.track || first.end === last.end)) ||
+      (closed && (measure(raw).length < 40 || extent < CONNECT_RADIUS));
     if (invalid || (!first && !last)) {
-      const closed = measure(draft).length >= 100 && separation(draft[0], draft[draft.length - 1]) <= 24;
-      const track = project(smooth(draft, closed), draftWidth, draftHeight);
-      tracks.push(track); active = track; distance = 0; direction = 1;
-      status.textContent = closed ? 'つながった！ ぐるぐる はしるよ' : 'せんろの はしから つなげるよ';
+      addIndependentStroke();
       return;
     }
     if (first) raw[0] = first.point;
@@ -137,40 +143,50 @@
     let extension = smooth(raw).points;
     extension = blendJoin(extension, first, true);
     extension = blendJoin(extension, last, false);
-    const closed = !!(first && last && first.track === last.track);
-    const used = [...new Set([first?.track, last?.track].filter(Boolean))];
-    const preserving = used.includes(active);
-    const old = active, oldFormation = old && formation(old);
+    const old = (first || last).track;
+    const train = trains.find(item => item.trackId === old.id);
+    const oldFormation = formation(old, train);
     let reversed = false, points = [];
     if (first) {
       points = first.end ? first.track.points.slice() : first.track.points.slice().reverse();
-      if (first.track === active) reversed = !first.end;
+      reversed = !first.end;
     }
     points = points.length ? points.concat(extension.slice(1)) : extension;
     if (last && !closed) {
       const tail = last.end ? last.track.points.slice().reverse() : last.track.points.slice();
       points = points.concat(tail.slice(1));
-      if (last.track === active) reversed = !!last.end;
+      reversed = !!last.end;
     }
     if (closed) points.pop(); // measure() adds the shared closing endpoint once.
-    if (preserving && reversed) points.reverse();
+    if (reversed) points.reverse();
     const source = measure(points, closed);
-    // Keep the running consist's count and size, including on short-track extensions.
-    const baseFormation = preserving ? oldFormation : formation(used[0]);
-    source.train = { count: baseFormation.count, size: baseFormation.scale };
-    const track = project(source, width, height);
-    if (preserving) {
-      const index = points.indexOf(old.points[0]);
-      const firstCarDistance = source.cumulative[index] + (old.closed ? 0 : oldFormation.margin) + distance;
-      distance = firstCarDistance - (closed ? 0 : formation(track).margin);
-      if (closed) distance = ((distance % track.length) + track.length) % track.length;
-      else distance = Math.max(0, Math.min(formation(track).travel, distance));
-      active = track;
+    if (!Number.isFinite(source.length) || source.length <= old.length || (closed && source.length < 100)) {
+      addIndependentStroke(); return;
     }
-    for (const previous of used) tracks.splice(tracks.indexOf(previous), 1);
-    tracks.push(track);
+    const track = project(source, width, height);
+    const index = points.indexOf(old.points[0]);
+    if (index < 0 || !train) { addIndependentStroke(); return; }
+    const firstCarDistance = source.cumulative[index] + oldFormation.margin + train.distance;
+    // Rebase the size to the new source viewport, keeping the same train and track IDs.
+    train.baseSize = oldFormation.scale;
+    train.distance = firstCarDistance - (closed ? 0 : formation(track, train).margin);
+    if (closed) train.distance = ((train.distance % track.length) + track.length) % track.length;
+    else train.distance = Math.max(0, Math.min(formation(track, train).travel, train.distance));
+    Object.assign(old, track);
     for (const hit of [first, last].filter(Boolean)) effects.push({ ...hit.point, width, height, age: 0 });
     status.textContent = closed ? 'つながった！ ぐるぐる はしるよ' : 'つながった！ もっと はしれるよ';
+  }
+
+  function addIndependentStroke() {
+    const closed = measure(draft).length >= 100 && separation(draft[0], draft[draft.length - 1]) <= 24;
+    const track = project(smooth(draft, closed), draftWidth, draftHeight);
+    if (!Number.isFinite(track.length) || track.length <= 0) return;
+    track.id = nextTrackId++;
+    tracks.push(track); tracksById.set(track.id, track);
+    trains.push({ id: nextTrainId++, trackId: track.id, type: 'hayabusa', distance: 0, direction: 1, speed: SPEED,
+      carCount: Math.max(1, Math.min(4, Math.floor(track.source.length / 70))),
+      baseSize: Math.min(1, track.source.length / 100) });
+    status.textContent = closed ? 'ぐるぐる！ みんなで はしるよ' : 'せんろが ふえた！ みんなで はしるよ';
   }
 
   function drawEffects(dt) {
@@ -190,8 +206,8 @@
     }
   }
 
-  function carPoses(track, offset) {
-    const f = formation(track);
+  function carPoses(track, offset, train) {
+    const f = formation(track, train);
     return Array.from({ length: f.count }, (_, i) => {
       const s = (track.closed ? 0 : f.margin) + offset + i * f.spacing;
       const p = sample(track, s);
@@ -265,8 +281,8 @@
     ctx.restore();
   }
 
-  function drawFormation(track) {
-    const f = formation(track), poses = carPoses(track, distance);
+  function drawFormation(track, train) {
+    const f = formation(track, train), poses = carPoses(track, train.distance, train);
     ctx.strokeStyle = '#546f66'; ctx.lineWidth = 3 * f.scale;
     // Follow the path behind the bodies so couplings also wrap across the seam.
     ctx.beginPath();
@@ -285,12 +301,13 @@
   function resize() {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const selected = tracks.indexOf(active);
-    const progress = active && formation(active).travel ? distance / formation(active).travel : 0;
+    const progress = trains.map(train => {
+      const travel = formation(tracksById.get(train.trackId), train).travel;
+      return travel ? train.distance / travel : 0;
+    });
     width = rect.width; height = rect.height;
-    tracks.forEach((track, i) => { tracks[i] = project(track.source, track.baseWidth, track.baseHeight); });
-    active = tracks[selected] || null;
-    distance = active ? progress * formation(active).travel : 0;
+    tracks.forEach(track => { Object.assign(track, project(track.source, track.baseWidth, track.baseHeight)); });
+    trains.forEach((train, i) => { train.distance = progress[i] * formation(tracksById.get(train.trackId), train).travel; });
     draftTrack = null;
     dpr = Math.min(window.devicePixelRatio || 1, 3);
     for (const surface of [canvas, railLayer]) { surface.width = Math.round(width * dpr); surface.height = Math.round(height * dpr); }
@@ -343,7 +360,9 @@
   canvas.addEventListener('contextmenu', event => event.preventDefault());
   document.getElementById('clear').addEventListener('click', () => {
     const released = pointerId;
-    tracks.length = 0; active = null; draft = null; draftTrack = null; pointerId = null; distance = 0;
+    tracks.length = 0; trains.length = 0; tracksById.clear();
+    nextTrackId = 1; nextTrainId = 1;
+    draft = null; draftTrack = null; pointerId = null; lastTime = null;
     effects.length = 0;
     if (released !== null && canvas.hasPointerCapture(released)) canvas.releasePointerCapture(released);
     railsDirty = true; hint.classList.remove('hidden');
@@ -357,7 +376,7 @@
     lastTime = time;
     if (railsDirty) {
       railCtx.clearRect(0, 0, width, height);
-      tracks.forEach(track => drawRails(railCtx, track, track === active));
+      tracks.forEach(track => drawRails(railCtx, track, true));
       railsDirty = false;
     }
     ctx.clearRect(0, 0, width, height);
@@ -366,18 +385,19 @@
       if (!draftTrack) draftTrack = project(smooth(draft), draftWidth, draftHeight);
       drawRails(ctx, draftTrack, true);
     }
-    if (active && active.length > 0) {
-      const { travel } = formation(active);
-      if (active.closed) distance = ((distance + direction * SPEED * dt) % travel + travel) % travel;
-      else if (!travel) distance = 0;
+    for (const train of trains) {
+      const track = tracksById.get(train.trackId);
+      const { travel } = formation(track, train);
+      if (track.closed) train.distance = ((train.distance + train.direction * train.speed * dt) % travel + travel) % travel;
+      else if (!travel) train.distance = 0;
       else {
         // Triangle-wave phase preserves overshoot even on a very short resized track.
-        let phase = direction === 1 ? distance : 2 * travel - distance;
-        phase = (phase + SPEED * dt) % (2 * travel);
-        direction = phase < travel ? 1 : -1;
-        distance = direction === 1 ? phase : 2 * travel - phase;
+        let phase = train.direction === 1 ? train.distance : 2 * travel - train.distance;
+        phase = (phase + train.speed * dt) % (2 * travel);
+        train.direction = phase < travel ? 1 : -1;
+        train.distance = train.direction === 1 ? phase : 2 * travel - phase;
       }
-      drawFormation(active);
+      drawFormation(track, train);
     }
     drawEffects(dt);
     requestAnimationFrame(frame);
