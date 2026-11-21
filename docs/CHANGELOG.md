@@ -1,5 +1,14 @@
 # 変更履歴
 
+## v0.1.1 GitHub Pages初回公開 — 2026-11-21
+
+- 公開リポジトリ https://github.com/ixzaby-bot/rakugaki-shinkansen を新規作成。
+- v0.1.0 / v0.1.1タグと既存コミットを保持してpush。mainブランチのルートからGitHub Pagesを公開。
+- ゲームURL: https://ixzaby-bot.github.io/rakugaki-shinkansen/
+- ゲーム実装はv0.1.1（c29647f）のまま。公開URL・更新手順・公開後検証結果のみ資料に追加。
+- HTML / CSS / JavaScriptのHTTP 200とローカル版との一致を確認。公開ページの直線描画・4両表示・全消去、390×844と768×1024相当の画面表示を確認。
+- iPhone / iPad Safari実機の操作とアドレスバー伸縮は未検証。
+
 ## v0.1.1 — 2026-11-21
 
 - 先頭車・中間車2両・最後尾車の最大4両編成を追加。各車両の位置・角度を経路距離から計算。

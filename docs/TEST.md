@@ -1,5 +1,38 @@
 # テスト記録
 
+## GitHub Pages公開後確認 — 2026-11-21
+
+対象ゲーム: v0.1.1 / `c29647f81a4d57de10d8657ca62f33ec20d0a7b3`。資料更新は後続コミットで管理する。
+
+- リポジトリ: https://github.com/ixzaby-bot/rakugaki-shinkansen （Public）。
+- 公開URL: https://ixzaby-bot.github.io/rakugaki-shinkansen/
+- 公開元: main / ルート。既存コミット・v0.1.0 / v0.1.1タグをpush。
+- 初回デプロイはGitHub Pages APIで `status: built`、対象コミット `c29647f`、エラーなしを確認。
+- `index.html`、`style.css`、`script.js`: 全件HTTP 200、MIMEタイプがそれぞれHTML / CSS / JavaScript。改行コードを正規化してローカル版と内容一致。
+- 公開ページをアプリ内ブラウザで開き、タイトル・初期案内・消去ボタンを確認。マウスの直線ドラッグで線路確定と4両表示を確認し、後続画面で車両位置の変化を確認。
+- 390×844、768×1024相当のviewportでCanvas・線路・車両・消去ボタンが画面内に収まることを目視確認。画面変更後も線路と編成を保持。
+- 実際のスタイルでCanvasの `touch-action: none`、bodyの `overflow: hidden` を確認。全消去後に案内文が初期状態へ戻ることを確認。
+- ブラウザが収集したコンソールのerrorログは0件。
+- Node.js構文確認・既存の自動テストを再実行し合格。
+
+### 未検証
+
+- viewport寸法変更はSafari／実タッチのエミュレーションではない。iPhone / iPad Safariの実タッチ、スクロール抑止、アドレスバー伸縮、safe-areaは引き続き実機未検証。
+- 公開ブラウザ上での曲線・閉路・急カーブの操作感、長時間負荷。走行計算については既存の自動テストで確認済み。
+
+## GitHub Pages公開前確認 — 2026-11-21
+
+対象: v0.1.1 / `c29647f81a4d57de10d8657ca62f33ec20d0a7b3`
+
+- `node --check script.js`、`node tests/smoke.cjs`: 再実行して合格。
+- 公開準備開始時のGit作業ツリー: 変更なし。v0.1.0 / v0.1.1タグを保持。リモート未設定。
+- 全2コミット・延べ28ファイルを確認。秘密鍵、代表的な認証トークン、APIキー等の代入、個人メールアドレス、Windowsユーザーディレクトリの絶対パスは検出なし。パターン検査と既存ソースの確認によるもので、あらゆる機密情報の不存在を保証するものではない。
+- コミットの著者メールはGitHubのnoreplyアドレス。素材はCanvasによるオリジナル描画と空フォルダのみで、外部素材・機密資料は含まない。
+- HTMLのCSS / JavaScript参照は相対パス。ブラウザ実行コードにWindows固有パス、外部API、ライブラリ依存なし。Node.jsは開発テスト時のみ使用。
+- スマートフォン対応の静的確認: Pointer Events、touch-action: none、固定body、overflow / overscroll制御、viewport-fit、safe-area、100dvhと100%のフォールバック、resize時の再投影を確認。
+- iPhone / iPad Safariの実タッチ、アドレスバー伸縮時の表示、スクロール抑止は実機未検証。
+- GitHub Pages公開後のHTTP・ファイル読み込み・デプロイ結果は、公開完了後に別途記録する。公開前確認のみをもって公開成功とは扱わない。
+
 ## v0.1.1 — 2026-11-21
 
 ### 実施済み: Node.js自動検証
