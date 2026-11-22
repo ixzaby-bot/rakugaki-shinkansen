@@ -10,8 +10,10 @@ const windowEvents = {};
 const documentEvents = {};
 let captured = null;
 let drawCalls = 0;
+let recordRotations = false; const rotations = [];
 const context = new Proxy({}, { get: (_, key) => (...args) => {
   for (const arg of args) if (typeof arg === 'number') assert.ok(Number.isFinite(arg), `Non-finite ${key}`);
+  if (recordRotations && key === 'rotate') rotations.push(args[0]);
   drawCalls++;
 }, set: () => true });
 const canvas = {
@@ -51,7 +53,7 @@ source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
     distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode };
-}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad }; })();`);
+}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad, drawTrain }; })();`);
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../vehicles.js'), 'utf8'), sandbox);
 const art = sandbox.window.TrainArt;
@@ -649,3 +651,13 @@ assert.equal(state().tracks.length, 1); near(outerRoadWidth(), 18);
 rect = { left: 0, top: 0, width: 1200, height: 900 }; windowEvents.resize();
 near(outerRoadWidth(), 36);
 console.log('PASS road width remains proportional across resize and extension rebasing.');
+
+// Actual draw transform must face travel direction rather than only reversing distance.
+const facingCar = state().trains[0], facingRoute = state().tracks[0];
+const facingPose = carPoses(facingRoute, facingCar.distance, facingCar)[0];
+recordRotations = true;
+facingCar.direction = 1; sandbox.testing.drawTrain(facingPose, 0, 1, 1, facingCar);
+facingCar.direction = -1; sandbox.testing.drawTrain(facingPose, 0, 1, 1, facingCar);
+recordRotations = false;
+near(rotations[1] - rotations[0], Math.PI);
+console.log('PASS car render orientation reverses by PI at unchanged center.');
