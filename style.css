@@ -52,3 +52,5 @@ footer { bottom: calc(92px + env(safe-area-inset-bottom)); }
 @media (max-height: 500px) { .train-choice .train-icon { height: 22px; } .train-choice span { font-size: 11px; min-height: 24px; } }
 
 @media (max-height: 500px) { footer { bottom: calc(84px + env(safe-area-inset-bottom)); } }
+
+@media (max-width: 400px) { .train-choice span { font-size: 10px; } }

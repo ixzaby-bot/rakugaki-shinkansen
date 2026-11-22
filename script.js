@@ -256,12 +256,13 @@
   }
 
   function drawRoad(context, track) {
+    const scale = formation(track).scale;
     context.save(); context.lineCap = 'round'; context.lineJoin = 'round';
     context.beginPath();
     track.points.forEach((p, i) => i ? context.lineTo(p.x, p.y) : context.moveTo(p.x, p.y));
-    context.strokeStyle = '#abb2b5'; context.lineWidth = 36; context.stroke();
-    context.strokeStyle = '#747e84'; context.lineWidth = 32; context.stroke();
-    context.setLineDash([10, 12]); context.lineWidth = 2; context.strokeStyle = '#fff1ba'; context.stroke();
+    context.strokeStyle = '#abb2b5'; context.lineWidth = 36 * scale; context.stroke();
+    context.strokeStyle = '#747e84'; context.lineWidth = 32 * scale; context.stroke();
+    context.setLineDash([10 * scale, 12 * scale]); context.lineWidth = 2 * scale; context.strokeStyle = '#fff1ba'; context.stroke();
     context.restore();
   }
 

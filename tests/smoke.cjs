@@ -51,7 +51,7 @@ source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
     distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode };
-}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS }; })();`);
+}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad }; })();`);
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../vehicles.js'), 'utf8'), sandbox);
 const art = sandbox.window.TrainArt;
@@ -629,3 +629,23 @@ state().trains.forEach(car => {
   assert.ok(car.distance >= 0 && car.distance <= formation(route, car).travel);
 });
 console.log(`PASS v0.3.0 R-01..R-24 logic: modes, five cars, 4-way extension/28px, loops/reversals, separated kinds, cancellation, 20 rotations, clear; 20 mixed routes x1600 mock frames ${(performance.now()-roadLoadStart).toFixed(1)} ms. R-17/18 UI hit testing and touch scrolling require browser/device verification.`);
+
+// Road stroke width follows vehicle scale through resize AND coordinate rebasing.
+clear(); modeButtons[1].click(); stroke([[100,100],[700,100]]);
+const roadStrokeWidths = [];
+const roadContext = new Proxy({}, { get(target, key) {
+  if (key === 'stroke') return () => roadStrokeWidths.push(target.lineWidth);
+  return target[key] || (() => {});
+} });
+function outerRoadWidth() {
+  roadStrokeWidths.length = 0; sandbox.testing.drawRoad(roadContext, state().tracks[0]);
+  return roadStrokeWidths[0];
+}
+near(outerRoadWidth(), 36);
+rect = { left: 0, top: 0, width: 600, height: 450 }; windowEvents.resize();
+near(outerRoadWidth(), 18);
+stroke([[350,50],[500,50]]);
+assert.equal(state().tracks.length, 1); near(outerRoadWidth(), 18);
+rect = { left: 0, top: 0, width: 1200, height: 900 }; windowEvents.resize();
+near(outerRoadWidth(), 36);
+console.log('PASS road width remains proportional across resize and extension rebasing.');
