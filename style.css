@@ -54,3 +54,4 @@ footer { bottom: calc(92px + env(safe-area-inset-bottom)); }
 @media (max-height: 500px) { footer { bottom: calc(84px + env(safe-area-inset-bottom)); } }
 
 @media (max-width: 400px) { .train-choice span { font-size: 10px; } }
+@media (max-height: 500px) { .hint-line { display: none; } .hint { top: 70px; bottom: 145px; } .hint p { font-size: 20px; line-height: 1.4; margin: 0; } }
