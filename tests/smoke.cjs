@@ -24,8 +24,18 @@ const canvas = {
 const status = {};
 const hint = { classList: { add() {}, remove() {}, toggle() {} } };
 let clear;
+const types = ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'];
+const choices = types.map(type => ({
+  dataset: { trainType: type }, pressed: String(type === 'hayabusa'),
+  querySelector: () => ({ getContext: () => context }),
+  setAttribute(name, value) { this.pressed = value; },
+  addEventListener(name, fn) { this[name] = fn; }
+}));
+let recordArt = false;
+const artCalls = [];
 const sandbox = {
   document: { getElementById: id => ({ canvas, status, hint, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
+    querySelectorAll: () => choices,
     createElement: () => ({ getContext: () => context }),
     addEventListener: (name, fn) => { documentEvents[name] = fn; } },
   window: { devicePixelRatio: 2, addEventListener: (name, fn) => { windowEvents[name] = fn; } },
@@ -36,9 +46,16 @@ let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'
 source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
-    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects };
+    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType };
 }; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS }; })();`);
-vm.runInNewContext(source, sandbox);
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../vehicles.js'), 'utf8'), sandbox);
+const art = sandbox.window.TrainArt;
+sandbox.window.TrainArt = { ...art, drawCar(...args) {
+  if (recordArt) artCalls.push({ type: args[1], role: args[2] });
+  art.drawCar(...args);
+} };
+vm.runInContext(source, sandbox);
 const state = () => sandbox.inspect();
 const { formation, carPoses, smooth, sample, measure } = sandbox.testing;
 const near = (actual, expected, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} != ${expected}`);
@@ -449,3 +466,52 @@ clear(); stroke([[100, 100], [124, 100]]); const shortRoute = state().tracks[0];
 stroke([[124, 100], [124, 110], [100, 110], [100, 100]]);
 assert.equal(shortRoute.closed, false); assert.equal(state().tracks.length, 2); verifyLinks();
 console.log(`PASS multi-train T-01..T-20: IDs, 1/2/5 trains, live input, continuity, no merging, 20 rotations, all clear, multiple loops and reversals; 10 trains × 1600 mock frames: ${loadMs.toFixed(1)} ms (not browser FPS).`);
+
+// v0.2.2: selection affects only future independent trains.
+clear();
+assert.equal(state().selectedType, 'hayabusa');
+assert.equal(choices[0].pressed, 'true');
+types.forEach((type, i) => {
+  choices[i].click();
+  assert.equal(state().selectedType, type);
+  assert.equal(choices.filter(b => b.pressed === 'true').length, 1);
+  assert.equal(state().draft, null);
+  assert.equal(state().trains.length, i);
+  stroke([[100, 100 + i * 100], [700, 100 + i * 100]]);
+  assert.equal(state().trains[i].type, type);
+});
+assert.deepEqual(Array.from(state().trains, t => t.type), types);
+const selectedTrain = state().trains[4], keptId = selectedTrain.id;
+choices[0].click();
+const priorDistance = selectedTrain.distance;
+stroke([[700, 500], [900, 500]]);
+assert.equal(state().trains.length, 5);
+assert.equal(selectedTrain.id, keptId);
+assert.equal(selectedTrain.type, 'd51');
+near(selectedTrain.distance, priorDistance);
+recordArt = true; tick(); recordArt = false;
+assert.equal(artCalls.filter(c => c.type === 'd51' && c.role === 'engine').length, 1);
+assert.equal(artCalls.filter(c => c.type === 'd51' && c.role === 'coach').length, 3);
+for (const type of types.slice(0, 4)) {
+  assert.equal(artCalls.filter(c => c.type === type && c.role === 'cab').length, 2);
+  assert.equal(artCalls.filter(c => c.type === type && c.role === 'coach').length, 2);
+}
+tick(1600);
+assert.deepEqual(Array.from(state().trains, t => t.type), types);
+const vehicleRotation = JSON.stringify(state().trains), oldRect2 = rect;
+rect = { left: 0, top: 0, width: 390, height: 844 }; windowEvents.resize();
+rect = oldRect2; windowEvents.resize();
+state().trains.forEach((t, i) => {
+  const before = JSON.parse(vehicleRotation)[i];
+  assert.equal(t.type, before.type); assert.equal(t.direction, before.direction);
+  near(t.distance, before.distance);
+});
+assert.equal(state().selectedType, 'hayabusa');
+choices[4].click(); clear(); assert.equal(state().selectedType, 'd51');
+stroke([[100,100],[124,100]]); assert.equal(state().trains[0].carCount, 1); tick(100);
+clear(); stroke([[100,100],[600,100],[600,400],[100,400],[100,100]]);
+assert.equal(state().tracks[0].closed, true); tick(1800);
+assert.equal(state().trains[0].type, 'd51');
+clear(); stroke([[100,100],[500,100],[110,110],[500,400]]); tick(1600);
+assert.equal(state().trains[0].type, 'd51');
+console.log('PASS v0.2.2: five selections/types, simultaneous trains, preserved types and extension position, engine + 3 coaches, short D51, curves/loops/reversals, rotation and clear selection. DOM/Canvas mock only.');

@@ -6,6 +6,20 @@
   const railCtx = railLayer.getContext('2d');
   const hint = document.getElementById('hint');
   const status = document.getElementById('status');
+  const trainArt = window.TrainArt;
+  let selectedType = 'hayabusa';
+  const choices = [...document.querySelectorAll('[data-train-type]')];
+  choices.forEach(button => {
+    const type = button.dataset.trainType;
+    const icon = button.querySelector('canvas').getContext('2d');
+    icon.setTransform(2, 0, 0, 2, 64, 46);
+    trainArt.drawCar(icon, type, type === 'd51' ? 'engine' : 'cab');
+    button.addEventListener('click', () => {
+      selectedType = type;
+      choices.forEach(choice => choice.setAttribute('aria-pressed', String(choice === button)));
+      status.textContent = trainArt.types[type].name + 'で かこう！';
+    });
+  });
   const tracks = [];
   const trains = [];
   const tracksById = new Map();
@@ -183,7 +197,7 @@
     if (!Number.isFinite(track.length) || track.length <= 0) return;
     track.id = nextTrackId++;
     tracks.push(track); tracksById.set(track.id, track);
-    trains.push({ id: nextTrainId++, trackId: track.id, type: 'hayabusa', distance: 0, direction: 1, speed: SPEED,
+    trains.push({ id: nextTrainId++, trackId: track.id, type: selectedType, distance: 0, direction: 1, speed: SPEED,
       carCount: Math.max(1, Math.min(4, Math.floor(track.source.length / 70))),
       baseSize: Math.min(1, track.source.length / 100) });
     status.textContent = closed ? 'ぐるぐる！ みんなで はしるよ' : 'せんろが ふえた！ みんなで はしるよ';
@@ -247,40 +261,19 @@
     }
   }
 
-  function drawTrain(p, index, count, scale) {
+  function drawTrain(p, index, count, scale, train) {
+    const steam = train.type === 'd51';
+    // Keep the locomotive on the same physical car: reverse running pushes coaches.
+    const role = steam ? (index === count - 1 ? 'engine' : 'coach') :
+      (index === 0 || index === count - 1 ? 'cab' : 'coach');
+    const reverse = steam ? train.direction < 0 : index === 0 && count > 1;
     ctx.save();
     ctx.translate(p.x, p.y);
-    ctx.rotate(p.angle + (index === 0 && count > 1 ? Math.PI : 0));
+    ctx.rotate(p.angle + (reverse ? Math.PI : 0));
     ctx.scale(scale, scale);
-    const cab = index === 0 || index === count - 1;
-    ctx.shadowColor = '#164b4030'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 3;
-    ctx.beginPath();
-    ctx.moveTo(-23, -11); ctx.quadraticCurveTo(-27, -11, -27, -6);
-    ctx.lineTo(-27, 6); ctx.quadraticCurveTo(-27, 11, -23, 11);
-    if (cab) {
-      ctx.lineTo(7, 11); ctx.bezierCurveTo(18, 11, 34, 3, 34, 0);
-      ctx.bezierCurveTo(34, -3, 18, -11, 7, -11);
-    } else {
-      ctx.lineTo(23, 11); ctx.quadraticCurveTo(27, 11, 27, 6);
-      ctx.lineTo(27, -6); ctx.quadraticCurveTo(27, -11, 23, -11);
-    }
-    ctx.closePath();
-    ctx.fillStyle = '#079b81'; ctx.fill(); ctx.shadowColor = 'transparent';
-    ctx.strokeStyle = '#08745f'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(-25, 7); ctx.lineTo(9, 7);
-    if (cab) ctx.quadraticCurveTo(19, 6, 29, 1); else ctx.lineTo(25, 7);
-    ctx.strokeStyle = '#f28ca8'; ctx.lineWidth = 3; ctx.stroke();
-    ctx.fillStyle = '#e5f6ef'; ctx.fillRect(-23, -7, 23, 4);
-    ctx.fillStyle = '#184d55';
-    if (cab) {
-      ctx.beginPath(); ctx.moveTo(5, -7); ctx.quadraticCurveTo(15, -5, 17, -1);
-      ctx.lineTo(8, 3); ctx.lineTo(3, 1); ctx.closePath(); ctx.fill();
-    } else {
-      for (let x = -19; x <= 17; x += 12) ctx.fillRect(x, -2, 7, 5);
-    }
+    trainArt.drawCar(ctx, train.type, role, train.distance / (5.5 * scale));
     ctx.restore();
   }
-
   function drawFormation(track, train) {
     const f = formation(track, train), poses = carPoses(track, train.distance, train);
     ctx.strokeStyle = '#546f66'; ctx.lineWidth = 3 * f.scale;
@@ -295,7 +288,7 @@
       }
     }
     ctx.stroke();
-    poses.forEach((p, i) => drawTrain(p, i, f.count, f.scale));
+    poses.forEach((p, i) => drawTrain(p, i, f.count, f.scale, train));
   }
 
   function resize() {
