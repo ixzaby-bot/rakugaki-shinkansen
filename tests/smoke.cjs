@@ -28,14 +28,18 @@ const types = ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'];
 const choices = types.map(type => ({
   dataset: { trainType: type }, pressed: String(type === 'hayabusa'),
   querySelector: () => ({ getContext: () => context }),
-  setAttribute(name, value) { this.pressed = value; },
+  setAttribute(name, value) { if (name === 'aria-pressed') this.pressed = value; },
+  addEventListener(name, fn) { this[name] = fn; }
+}));
+const modeButtons = ['rail', 'road'].map(mode => ({
+  dataset: { mode }, setAttribute(name, value) { this.pressed = value; },
   addEventListener(name, fn) { this[name] = fn; }
 }));
 let recordArt = false;
 const artCalls = [];
 const sandbox = {
-  document: { getElementById: id => ({ canvas, status, hint, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
-    querySelectorAll: () => choices,
+  document: { getElementById: id => ({ canvas, status, hint, 'hint-text': {}, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
+    querySelectorAll: selector => selector === '[data-mode]' ? modeButtons : choices,
     createElement: () => ({ getContext: () => context }),
     addEventListener: (name, fn) => { documentEvents[name] = fn; } },
   window: { devicePixelRatio: 2, addEventListener: (name, fn) => { windowEvents[name] = fn; } },
@@ -46,8 +50,8 @@ let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'
 source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
-    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType };
-}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS }; })();`);
+    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode };
+}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS }; })();`);
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../vehicles.js'), 'utf8'), sandbox);
 const art = sandbox.window.TrainArt;
@@ -515,3 +519,113 @@ assert.equal(state().trains[0].type, 'd51');
 clear(); stroke([[100,100],[500,100],[110,110],[500,400]]); tick(1600);
 assert.equal(state().trains[0].type, 'd51');
 console.log('PASS v0.2.2: five selections/types, simultaneous trains, preserved types and extension position, engine + 3 coaches, short D51, curves/loops/reversals, rotation and clear selection. DOM/Canvas mock only.');
+
+// v0.3.0 road mode: R-01..R-24 logic; touch/layout require a real browser.
+assert.equal(state().mode, 'rail'); // R-01
+clear(); modeButtons[1].click();
+assert.equal(state().mode, 'road'); assert.equal(state().selectedType, 'police');
+const roadTypes = ['police', 'fire', 'ambulance', 'bus', 'minivan'];
+roadTypes.forEach((type, i) => {
+  choices[i].click(); assert.equal(state().selectedType, type);
+  assert.equal(state().tracks.length, i); assert.equal(state().draft, null);
+  stroke([[100, 100 + i * 150], [1000, 100 + i * 150]]);
+  const car = state().trains[i];
+  assert.equal(car.type, type); assert.equal(car.carCount, 1);
+  assert.equal(state().tracks[i].kind, 'road');
+});
+assert.deepEqual(Array.from(state().trains, t => t.type), roadTypes);
+modeButtons[0].click(); assert.equal(state().selectedType, 'd51');
+for (let i = 0; i < 5; i++) {
+  choices[i].click(); stroke([[100, 160 + i * 150], [1000, 160 + i * 150]]);
+}
+assert.equal(state().tracks.length, 10); assert.equal(state().trains.length, 10);
+const mixedTypes = Array.from(state().trains, t => t.type);
+const mixedProgress = Array.from(state().trains, t => t.distance);
+tick(50); state().trains.forEach((t, i) => assert.notEqual(t.distance, mixedProgress[i]));
+assert.deepEqual(Array.from(state().trains, t => t.type), mixedTypes);
+modeButtons[1].click(); assert.equal(state().selectedType, 'minivan');
+// Adding a path must not pause any existing vehicle, including other modes.
+listeners.pointerdown(event(30, 30)); listeners.pointermove(event(500, 30));
+const beforeLive = Array.from(state().trains, t => t.distance); tick(5);
+state().trains.forEach((t, i) => assert.notEqual(t.distance, beforeLive[i]));
+// Switching mode while drawing cancels the draft and releases capture.
+modeButtons[0].click(); assert.equal(state().draft, null); assert.equal(captured, null);
+listeners.pointerup(event(500, 30)); assert.equal(state().tracks.length, 10);
+// Repeat landscape/portrait round trips without coordinate accumulation.
+const roadOriginalSources = state().tracks.map(t => t.source);
+const roadOriginalPoints = JSON.stringify(state().tracks.map(t => t.points));
+for (let i = 0; i < 20; i++) {
+  rect = { left: 0, top: 0, width: 390, height: 844 }; windowEvents.resize();
+  rect = { left: 13, top: 21, width: 1200, height: 900 }; windowEvents.resize();
+}
+assert.equal(JSON.stringify(state().tracks.map(t => t.points)), roadOriginalPoints);
+state().tracks.forEach((t, i) => assert.equal(t.source, roadOriginalSources[i]));
+assert.deepEqual(Array.from(state().trains, t => t.type), mixedTypes);
+// All four endpoint orientations preserve the car's center, ID, size and type.
+modeButtons[1].click();
+for (const points of [
+  [[800,300],[1050,400]], [[1050,400],[800,300]],
+  [[300,300],[50,400]], [[50,400],[300,300]]
+]) {
+  clear(); stroke([[300,300],[800,300]]); tick(40);
+  const car = state().trains[0], route = state().tracks[0];
+  const before = carPoses(route, car.distance, car)[0];
+  const identity = { id: car.id, type: car.type, direction: car.direction, baseSize: car.baseSize };
+  stroke(points);
+  assert.equal(state().trains.length, 1); assert.equal(state().tracks.length, 1);
+  const after = carPoses(route, car.distance, car)[0]; near(before.x, after.x); near(before.y, after.y);
+  for (const key of Object.keys(identity)) assert.equal(car[key], identity[key]);
+}
+// Separate road tolerance boundary, repeated extensions, loop closure.
+assert.equal(sandbox.testing.ROAD_CONNECT_RADIUS, 28);
+for (const gap of [28, 29]) {
+  clear(); stroke([[300,300],[800,300]]);
+  stroke([[800 + gap,300],[1050,300]]);
+  assert.equal(state().trains.length, gap === 28 ? 1 : 2);
+}
+clear(); stroke([[300,300],[800,300]]); tick(30);
+for (let end = 850; end <= 1000; end += 50) stroke([[end-50,300],[end,300]]);
+assert.equal(state().trains.length, 1);
+const loopCar = state().trains[0], loopRoute = state().tracks[0];
+const preLoop = carPoses(loopRoute, loopCar.distance, loopCar)[0];
+stroke([[1000,300],[1000,600],[300,600],[300,300]]);
+assert.equal(loopRoute.closed, true); assert.equal(state().trains[0], loopCar);
+const postLoop = carPoses(loopRoute, loopCar.distance, loopCar)[0]; near(preLoop.x, postLoop.x); near(preLoop.y, postLoop.y);
+tick(2000); assert.ok(loopCar.distance >= 0 && loopCar.distance < loopRoute.length);
+clear(); stroke([[100,100],[500,100]]); tick(600);
+assert.equal(state().trains[0].direction, -1);
+// Crossing and coincident endpoints NEVER connect across kinds, in either direction.
+for (const firstMode of [0, 1]) {
+  clear(); modeButtons[firstMode].click(); stroke([[100,300],[700,300]]);
+  modeButtons[1-firstMode].click(); stroke([[700,300],[900,500]]);
+  stroke([[400,100],[400,600]]);
+  assert.equal(state().tracks.length, 3); assert.equal(state().trains.length, 3);
+  assert.equal(state().tracks[0].length, 600);
+}
+modeButtons[1].click(); clear();
+stroke([[100,100],[400,100]]); stroke([[700,600],[1000,600]]);
+stroke([[400,100],[550,400],[700,600]]);
+assert.equal(state().tracks.length, 3); assert.equal(state().trains.length, 3);
+// Tiny roads, zero-length input, interrupted pointers and reset preserve selection.
+clear(); const retainedRoadType = state().selectedType;
+stroke([[100,100],[100,100]]); assert.equal(state().trains.length, 0);
+stroke([[100,100],[124,100]]); tick(100); assert.equal(state().trains[0].carCount, 1);
+clear(); assert.equal(state().mode, 'road'); assert.equal(state().selectedType, retainedRoadType);
+assert.equal(state().tracks.length, 0); assert.equal(state().trains.length, 0);
+stroke([[100,100],[700,100]]); assert.equal(state().trains[0].type, retainedRoadType);
+// Twenty mixed routes share exactly one scheduled animation chain.
+clear();
+for (let i = 0; i < 20; i++) {
+  modeButtons[i % 2].click(); choices[i % 5].click();
+  stroke([[100, 25 + i * 42], [1000, 25 + i * 42]]);
+}
+assert.equal(state().trains.length, 20);
+const scheduledBefore = animationRequests, roadLoadStart = performance.now();
+tick(1600);
+assert.equal(animationRequests - scheduledBefore, 1600);
+state().trains.forEach(car => {
+  const route = state().tracks.find(t => t.id === car.trackId);
+  assert.equal(route.kind, art.types[car.type].kind === 'road' ? 'road' : 'rail');
+  assert.ok(car.distance >= 0 && car.distance <= formation(route, car).travel);
+});
+console.log(`PASS v0.3.0 R-01..R-24 logic: modes, five cars, 4-way extension/28px, loops/reversals, separated kinds, cancellation, 20 rotations, clear; 20 mixed routes x1600 mock frames ${(performance.now()-roadLoadStart).toFixed(1)} ms. R-17/18 UI hit testing and touch scrolling require browser/device verification.`);

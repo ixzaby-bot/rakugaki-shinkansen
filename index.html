@@ -4,19 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#16866d">
-  <meta name="description" content="5種類の列車を選んで、指で描いた線路を走らせるお絵描きゲーム。">
+  <meta name="description" content="線路と道路を描いて、列車や自動車を走らせるお絵描きゲーム。">
   <title>らくがき新幹線</title>
-  <link rel="stylesheet" href="style.css?v=0.2.2">
-  <script src="vehicles.js?v=0.2.2" defer></script>
-  <script src="script.js?v=0.2.2" defer></script>
+  <link rel="stylesheet" href="style.css?v=0.3.0">
+  <script src="vehicles.js?v=0.3.0" defer></script>
+  <script src="script.js?v=0.3.0" defer></script>
 </head>
 <body>
   <main id="game" aria-label="らくがき新幹線">
-    <canvas id="canvas" aria-label="指やマウスで線路を描くキャンバス">Canvasに対応したブラウザで遊んでください。</canvas>
+    <canvas id="canvas" aria-label="指やマウスで線路や道路を描くキャンバス">Canvasに対応したブラウザで遊んでください。</canvas>
     <header class="heading"><h1>らくがき<span>新幹線</span></h1><p>きみの せんろを はしるよ</p></header>
-    <div id="hint" class="hint"><span class="hint-line" aria-hidden="true">〰</span><p>ゆびで せんろを<br>かいてみよう！</p></div>
+    <div id="hint" class="hint"><span class="hint-line" aria-hidden="true">〰</span><p id="hint-text">ゆびで せんろを かいてみよう！</p></div>
     <footer><p id="status" role="status">せんろの はしから つなげるよ</p><button id="clear" type="button"><span aria-hidden="true">↺</span> ぜんぶけす</button></footer>
-    <nav id="train-picker" aria-label="これから描く列車を選ぶ">
+    <nav id="mode-picker" aria-label="描くものを選ぶ">
+      <button type="button" data-mode="rail" aria-pressed="true">🚄 せんろ</button>
+      <button type="button" data-mode="road" aria-pressed="false">🚗 どうろ</button>
+    </nav>
+    <nav id="train-picker" aria-label="これから描く乗り物を選ぶ">
       <button type="button" class="train-choice" data-train-type="hayabusa" aria-pressed="true"><canvas class="train-icon" width="140" height="80" aria-hidden="true"></canvas><span>はやぶさ</span></button>
       <button type="button" class="train-choice" data-train-type="komachi" aria-pressed="false"><canvas class="train-icon" width="140" height="80" aria-hidden="true"></canvas><span>こまち</span></button>
       <button type="button" class="train-choice" data-train-type="kagayaki" aria-pressed="false"><canvas class="train-icon" width="140" height="80" aria-hidden="true"></canvas><span>かがやき</span></button>

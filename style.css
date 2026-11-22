@@ -32,3 +32,23 @@ footer { bottom: calc(92px + env(safe-area-inset-bottom)); }
   footer { bottom: calc(76px + env(safe-area-inset-bottom)); } #status { margin: 0; }
   #clear { min-height: 44px; } .train-choice { min-height: 56px; } .train-choice .train-icon { height: 26px; }
 }
+
+/* Modes share the existing five-slot picker; heading yields space on small screens. */
+#mode-picker { position: absolute; top: max(18px, env(safe-area-inset-top)); right: max(18px, env(safe-area-inset-right)); display: flex; gap: 6px; }
+#mode-picker button { min-height: 52px; padding: 8px 14px; font-size: 17px; border-radius: 16px; }
+#mode-picker [aria-pressed="true"] { border-color: #16866d; background: #dcf4e7; box-shadow: inset 0 0 0 1px #16866d; }
+.hint p { max-width: 290px; }
+@media (max-width: 650px) {
+  .heading { top: max(10px, env(safe-area-inset-top)); left: 14px; }
+  .heading h1 { font-size: 20px; } .heading p { display: none; }
+  #mode-picker { top: calc(43px + env(safe-area-inset-top)); left: 12px; right: auto; }
+}
+@media (max-height: 500px) and (min-width: 501px) {
+  #mode-picker { top: max(8px, env(safe-area-inset-top)); left: auto; right: 12px; }
+}
+
+.train-choice span { white-space: pre-line; line-height: 1.1; min-height: 28px; display: flex; align-items: center; justify-content: center; }
+.train-choice .train-icon { height: 30px; }
+@media (max-height: 500px) { .train-choice .train-icon { height: 22px; } .train-choice span { font-size: 11px; min-height: 24px; } }
+
+@media (max-height: 500px) { footer { bottom: calc(84px + env(safe-area-inset-bottom)); } }

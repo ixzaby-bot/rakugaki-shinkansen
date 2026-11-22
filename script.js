@@ -7,24 +7,48 @@
   const hint = document.getElementById('hint');
   const status = document.getElementById('status');
   const trainArt = window.TrainArt;
-  let selectedType = 'hayabusa';
+  let mode = 'rail', selectedType = 'hayabusa';
+  const selections = { rail: 'hayabusa', road: 'police' };
+  const catalogs = { rail: ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'],
+    road: ['police', 'fire', 'ambulance', 'bus', 'minivan'] };
   const choices = [...document.querySelectorAll('[data-train-type]')];
-  choices.forEach(button => {
-    const type = button.dataset.trainType;
-    const icon = button.querySelector('canvas').getContext('2d');
-    icon.setTransform(2, 0, 0, 2, 64, 46);
-    trainArt.drawCar(icon, type, type === 'd51' ? 'engine' : 'cab');
-    button.addEventListener('click', () => {
-      selectedType = type;
-      choices.forEach(choice => choice.setAttribute('aria-pressed', String(choice === button)));
-      status.textContent = trainArt.types[type].name + 'で かこう！';
+  const modeButtons = [...document.querySelectorAll('[data-mode]')];
+  const routeName = () => mode === 'road' ? 'どうろ' : 'せんろ';
+  function refreshChoices() {
+    choices.forEach((button, i) => {
+      const type = catalogs[mode][i];
+      button.dataset.trainType = type;
+      button.querySelector('span').textContent = trainArt.types[type].label || trainArt.types[type].name;
+      button.setAttribute('aria-label', type === 'd51' ? 'D51 蒸気機関車' : trainArt.types[type].name);
+      button.setAttribute('aria-pressed', String(type === selectedType));
+      const icon = button.querySelector('canvas').getContext('2d');
+      icon.setTransform(1, 0, 0, 1, 0, 0); icon.clearRect(0, 0, 140, 80);
+      icon.setTransform(2, 0, 0, 2, 64, 46);
+      trainArt.drawCar(icon, type, type === 'd51' ? 'engine' : 'cab');
     });
-  });
+    modeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === mode)));
+    document.getElementById('hint-text').textContent = 'ゆびで ' + routeName() + 'を かいてみよう！';
+  }
+  choices.forEach(button => button.addEventListener('click', () => {
+    selectedType = button.dataset.trainType;
+    selections[mode] = selectedType;
+    refreshChoices();
+    status.textContent = trainArt.types[selectedType].name + 'で かこう！';
+  }));
+  modeButtons.forEach(button => button.addEventListener('click', () => {
+    if (button.dataset.mode === mode) return;
+    if (pointerId !== null) finish({ pointerId }, true);
+    mode = button.dataset.mode; selectedType = selections[mode];
+    refreshChoices(); status.textContent = routeName() + 'の はしから つなげるよ';
+  }));
+  // Shared route/vehicle arrays: kind filters topology, IDs remain globally unique.
   const tracks = [];
   const trains = [];
   const tracksById = new Map();
   let nextTrackId = 1, nextTrainId = 1;
   const SPEED = 70; // CSS pixels per second
+  const ROAD_SPEED = 60;
+  const ROAD_CONNECT_RADIUS = 28; // CSS px; independent road tuning
   const MIN_LENGTH = 24;
   const CONNECT_RADIUS = 28; // CSS px; endpoint snapping tolerance
   const effects = [];
@@ -98,13 +122,14 @@
     return { count, scale, spacing, margin, travel };
   }
 
-  function endpointNear(p) {
+  function endpointNear(p, kind = mode) {
+    const radius = kind === 'road' ? ROAD_CONNECT_RADIUS : CONNECT_RADIUS;
     const candidates = [];
-    tracks.filter(t => !t.closed).forEach(track => {
+    tracks.filter(t => !t.closed && t.kind === kind).forEach(track => {
       for (const end of [0, 1]) {
         const point = track.points[end ? track.points.length - 1 : 0];
         const gap = separation(p, point);
-        if (gap <= CONNECT_RADIUS) candidates.push({ track, end, point, gap });
+        if (gap <= radius) candidates.push({ track, end, point, gap });
       }
     });
     candidates.sort((a, b) => a.gap - b.gap);
@@ -195,12 +220,12 @@
     const closed = measure(draft).length >= 100 && separation(draft[0], draft[draft.length - 1]) <= 24;
     const track = project(smooth(draft, closed), draftWidth, draftHeight);
     if (!Number.isFinite(track.length) || track.length <= 0) return;
-    track.id = nextTrackId++;
+    track.id = nextTrackId++; track.kind = mode;
     tracks.push(track); tracksById.set(track.id, track);
-    trains.push({ id: nextTrainId++, trackId: track.id, type: selectedType, distance: 0, direction: 1, speed: SPEED,
-      carCount: Math.max(1, Math.min(4, Math.floor(track.source.length / 70))),
+    trains.push({ id: nextTrainId++, trackId: track.id, type: selectedType, distance: 0, direction: 1, speed: mode === 'road' ? ROAD_SPEED : SPEED,
+      carCount: mode === 'road' ? 1 : Math.max(1, Math.min(4, Math.floor(track.source.length / 70))),
       baseSize: Math.min(1, track.source.length / 100) });
-    status.textContent = closed ? 'ぐるぐる！ みんなで はしるよ' : 'せんろが ふえた！ みんなで はしるよ';
+    status.textContent = closed ? 'ぐるぐる！ みんなで はしるよ' : routeName() + 'が ふえた！ みんなで はしるよ';
   }
 
   function drawEffects(dt) {
@@ -228,6 +253,16 @@
       const a = sample(track, s - 6 * f.scale), b = sample(track, s + 6 * f.scale);
       return { ...p, angle: Math.atan2(b.y - a.y, b.x - a.x), s };
     });
+  }
+
+  function drawRoad(context, track) {
+    context.save(); context.lineCap = 'round'; context.lineJoin = 'round';
+    context.beginPath();
+    track.points.forEach((p, i) => i ? context.lineTo(p.x, p.y) : context.moveTo(p.x, p.y));
+    context.strokeStyle = '#abb2b5'; context.lineWidth = 36; context.stroke();
+    context.strokeStyle = '#747e84'; context.lineWidth = 32; context.stroke();
+    context.setLineDash([10, 12]); context.lineWidth = 2; context.strokeStyle = '#fff1ba'; context.stroke();
+    context.restore();
   }
 
   function drawRails(context, track, selected) {
@@ -263,10 +298,11 @@
 
   function drawTrain(p, index, count, scale, train) {
     const steam = train.type === 'd51';
+    const road = trainArt.types[train.type].kind === 'road';
     // Keep the locomotive on the same physical car: reverse running pushes coaches.
     const role = steam ? (index === count - 1 ? 'engine' : 'coach') :
       (index === 0 || index === count - 1 ? 'cab' : 'coach');
-    const reverse = steam ? train.direction < 0 : index === 0 && count > 1;
+    const reverse = steam || road ? train.direction < 0 : index === 0 && count > 1;
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.angle + (reverse ? Math.PI : 0));
@@ -359,7 +395,7 @@
     effects.length = 0;
     if (released !== null && canvas.hasPointerCapture(released)) canvas.releasePointerCapture(released);
     railsDirty = true; hint.classList.remove('hidden');
-    status.textContent = 'せんろの はしから つなげるよ';
+    status.textContent = routeName() + 'の はしから つなげるよ';
   });
   window.addEventListener('resize', resize);
   document.addEventListener('visibilitychange', () => { lastTime = null; });
@@ -369,14 +405,17 @@
     lastTime = time;
     if (railsDirty) {
       railCtx.clearRect(0, 0, width, height);
-      tracks.forEach(track => drawRails(railCtx, track, true));
+      // Roads below rails at crossings; no junction or stopping logic yet.
+      tracks.filter(t => t.kind === 'road').forEach(track => drawRoad(railCtx, track));
+      tracks.filter(t => t.kind === 'rail').forEach(track => drawRails(railCtx, track, true));
       railsDirty = false;
     }
     ctx.clearRect(0, 0, width, height);
     ctx.drawImage(railLayer, 0, 0, width, height);
     if (draft && draft.length > 1) {
       if (!draftTrack) draftTrack = project(smooth(draft), draftWidth, draftHeight);
-      drawRails(ctx, draftTrack, true);
+      if (mode === 'road') drawRoad(ctx, draftTrack);
+      else drawRails(ctx, draftTrack, true);
     }
     for (const train of trains) {
       const track = tracksById.get(train.trackId);
@@ -395,6 +434,7 @@
     drawEffects(dt);
     requestAnimationFrame(frame);
   }
+  refreshChoices();
   resize();
   requestAnimationFrame(frame);
 })();
