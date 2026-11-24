@@ -37,7 +37,7 @@
   }));
   modeButtons.forEach(button => button.addEventListener('click', () => {
     if (button.dataset.mode === mode) return;
-    if (pointerId !== null) finish({ pointerId }, true);
+    cancelInput();
     mode = button.dataset.mode; selectedType = selections[mode];
     refreshChoices(); status.textContent = routeName() + 'の はしから つなげるよ';
   }));
@@ -46,15 +46,20 @@
   const trains = [];
   const tracksById = new Map();
   let nextTrackId = 1, nextTrainId = 1;
-  const SPEED = 70; // CSS pixels per second
+  const SPEED = 70; // World units per second, independent of zoom
   const ROAD_SPEED = 60;
   const ROAD_CONNECT_RADIUS = 28; // CSS px; independent road tuning
   const MIN_LENGTH = 24;
   const CONNECT_RADIUS = 28; // CSS px; endpoint snapping tolerance
+  const MAX_CONNECT_WORLD = 56;
+  const cameraMath = window.WorldCamera;
+  const camera = cameraMath.initial();
+  const pointers = new Map();
+  let inputState = 'idle', gesture = null;
   const effects = [];
   let width = 0, height = 0, dpr = 1;
   let draft = null, pointerId = null;
-  let draftWidth = 0, draftHeight = 0, draftTrack = null;
+  let draftTrack = null;
   let lastTime = null, railsDirty = true;
 
   const separation = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
@@ -101,16 +106,19 @@
     return measure(path, closed);
   }
 
-  function view(baseWidth, baseHeight) {
-    const scale = Math.min(width / baseWidth, height / baseHeight);
-    return { scale, x: (width - baseWidth * scale) / 2, y: (height - baseHeight * scale) / 2 };
+  const screenToWorld = p => cameraMath.screenToWorld(p, camera, width, height);
+  const worldToScreen = p => cameraMath.worldToScreen(p, camera, width, height);
+  function setCamera(next) {
+    Object.assign(camera, cameraMath.clamp(next, width, height));
+    railsDirty = true;
+    document.getElementById('zoom').textContent = Math.round(camera.zoom * 100) + '%';
   }
-
-  function project(source, baseWidth, baseHeight) {
-    const v = view(baseWidth, baseHeight);
-    const points = source.closed ? source.points.slice(0, -1) : source.points;
-    return { ...measure(points.map(p => ({ x: p.x * v.scale + v.x, y: p.y * v.scale + v.y })), source.closed),
-      source, baseWidth, baseHeight, scale: v.scale };
+  // Keep one immutable coordinate system; source remains the canonical measured path.
+  function worldPath(source) { return { ...source, source, scale: 1 }; }
+  function worldTransform(context) {
+    const z = camera.zoom;
+    context.setTransform(dpr * z, 0, 0, dpr * z,
+      dpr * (width / 2 - camera.x * z), dpr * (height / 2 - camera.y * z));
   }
 
   function formation(track, train = trains.find(item => item.trackId === track.id)) {
@@ -123,17 +131,17 @@
   }
 
   function endpointNear(p, kind = mode) {
-    const radius = kind === 'road' ? ROAD_CONNECT_RADIUS : CONNECT_RADIUS;
+    const radius = Math.min(MAX_CONNECT_WORLD, (kind === 'road' ? ROAD_CONNECT_RADIUS : CONNECT_RADIUS) / camera.zoom);
     const candidates = [];
     tracks.filter(t => !t.closed && t.kind === kind).forEach(track => {
       for (const end of [0, 1]) {
         const point = track.points[end ? track.points.length - 1 : 0];
         const gap = separation(p, point);
-        if (gap <= radius) candidates.push({ track, end, point, gap });
+        if (gap <= radius + 1e-7) candidates.push({ track, end, point, gap });
       }
     });
     candidates.sort((a, b) => a.gap - b.gap);
-    if (candidates.length > 1 && candidates[1].gap - candidates[0].gap < .5) return { ambiguous: true };
+    if (candidates.length > 1 && (candidates[1].gap - candidates[0].gap) * camera.zoom < .5) return { ambiguous: true };
     return candidates[0] || null;
   }
 
@@ -162,8 +170,7 @@
   }
 
   function commitStroke() {
-    const v = view(draftWidth, draftHeight);
-    const raw = draft.map(p => ({ x: p.x * v.scale + v.x, y: p.y * v.scale + v.y }));
+    const raw = draft.map(p => ({ ...p }));
     const first = endpointNear(raw[0]), last = endpointNear(raw[raw.length - 1]);
     const closed = !!(first?.track && last?.track && first.track === last.track && first.end !== last.end);
     const bounds = raw.reduce((box, p) => ({ minX: Math.min(box.minX, p.x), maxX: Math.max(box.maxX, p.x),
@@ -202,23 +209,23 @@
     if (!Number.isFinite(source.length) || source.length <= old.length || (closed && source.length < 100)) {
       addIndependentStroke(); return;
     }
-    const track = project(source, width, height);
+    const track = worldPath(source);
     const index = points.indexOf(old.points[0]);
     if (index < 0 || !train) { addIndependentStroke(); return; }
     const firstCarDistance = source.cumulative[index] + oldFormation.margin + train.distance;
-    // Rebase the size to the new source viewport, keeping the same train and track IDs.
+    // Preserve physical size, train ID and world position when adding a prefix.
     train.baseSize = oldFormation.scale;
     train.distance = firstCarDistance - (closed ? 0 : formation(track, train).margin);
     if (closed) train.distance = ((train.distance % track.length) + track.length) % track.length;
     else train.distance = Math.max(0, Math.min(formation(track, train).travel, train.distance));
     Object.assign(old, track);
-    for (const hit of [first, last].filter(Boolean)) effects.push({ ...hit.point, width, height, age: 0 });
+    for (const hit of [first, last].filter(Boolean)) effects.push({ ...hit.point, age: 0 });
     status.textContent = closed ? 'つながった！ ぐるぐる はしるよ' : 'つながった！ もっと はしれるよ';
   }
 
   function addIndependentStroke() {
     const closed = measure(draft).length >= 100 && separation(draft[0], draft[draft.length - 1]) <= 24;
-    const track = project(smooth(draft, closed), draftWidth, draftHeight);
+    const track = worldPath(smooth(draft, closed));
     if (!Number.isFinite(track.length) || track.length <= 0) return;
     track.id = nextTrackId++; track.kind = mode;
     tracks.push(track); tracksById.set(track.id, track);
@@ -232,8 +239,8 @@
     for (let i = effects.length - 1; i >= 0; i--) {
       const effect = effects[i]; effect.age += dt;
       if (effect.age >= .6) { effects.splice(i, 1); continue; }
-      const v = view(effect.width, effect.height), radius = 8 + effect.age * 28;
-      ctx.save(); ctx.translate(effect.x * v.scale + v.x, effect.y * v.scale + v.y);
+      const radius = 8 + effect.age * 28;
+      ctx.save(); ctx.translate(effect.x, effect.y);
       ctx.globalAlpha = 1 - effect.age / .6; ctx.strokeStyle = '#eeb83e'; ctx.lineWidth = 3;
       ctx.beginPath();
       for (let j = 0; j < 8; j++) {
@@ -331,56 +338,100 @@
   function resize() {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const progress = trains.map(train => {
-      const travel = formation(tracksById.get(train.trackId), train).travel;
-      return travel ? train.distance / travel : 0;
-    });
     width = rect.width; height = rect.height;
-    tracks.forEach(track => { Object.assign(track, project(track.source, track.baseWidth, track.baseHeight)); });
-    trains.forEach((train, i) => { train.distance = progress[i] * formation(tracksById.get(train.trackId), train).travel; });
-    draftTrack = null;
     dpr = Math.min(window.devicePixelRatio || 1, 3);
-    for (const surface of [canvas, railLayer]) { surface.width = Math.round(width * dpr); surface.height = Math.round(height * dpr); }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    railCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    railsDirty = true;
+    for (const surface of [canvas, railLayer]) {
+      surface.width = Math.round(width * dpr); surface.height = Math.round(height * dpr);
+    }
+    // Do not project geometry or change vehicle progress on viewport changes.
+    setCamera(camera);
+    if (inputState === 'cameraGesture') gesture = null; // Wait for all fingers after rotation.
   }
-
-  function point(event) {
+  function screenPoint(event) {
     const rect = canvas.getBoundingClientRect();
-    const v = view(draftWidth, draftHeight);
-    return { x: (Math.max(0, Math.min(width, event.clientX - rect.left)) - v.x) / v.scale,
-      y: (Math.max(0, Math.min(height, event.clientY - rect.top)) - v.y) / v.scale };
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+  function point(event) {
+    const p = screenToWorld(screenPoint(event));
+    return { x: Math.max(0, Math.min(cameraMath.WORLD_WIDTH, p.x)),
+      y: Math.max(0, Math.min(cameraMath.WORLD_HEIGHT, p.y)) };
   }
   function append(event) {
     const p = point(event);
-    if (separation(draft[draft.length - 1], p) * view(draftWidth, draftHeight).scale >= 2) {
+    if (separation(draft[draft.length - 1], p) * camera.zoom >= 2) {
       draft.push(p); draftTrack = null;
     }
   }
-  function finish(event, cancelled = false) {
-    if (event.pointerId !== pointerId) return;
-    if (!cancelled) append(event);
-    if (!cancelled && draft.length > 1) {
-      if (measure(draft).length >= MIN_LENGTH) {
-        commitStroke(); railsDirty = true;
-      } else status.textContent = 'もうすこし ながく かいてみよう';
-    }
-    const released = pointerId;
+  function cancelInput() {
+    draft = null; draftTrack = null; pointerId = null; gesture = null;
+    inputState = pointers.size ? 'cameraGesture' : 'idle';
+    hint.classList.toggle('hidden', tracks.length > 0);
+  }
+  function release(id) {
+    if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
+  }
+  function resetInput() {
+    const ids = [...pointers.keys()]; pointers.clear(); cancelInput(); ids.forEach(release);
+  }
+  function beginGesture() {
     draft = null; draftTrack = null; pointerId = null;
-    if (canvas.hasPointerCapture(released)) canvas.releasePointerCapture(released);
+    inputState = 'cameraGesture';
+    const pair = [...pointers.entries()].slice(0, 2);
+    const [a, b] = pair.map(entry => entry[1]);
+    const midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    gesture = { ids: pair.map(entry => entry[0]), anchor: screenToWorld(midpoint),
+      distance: Math.max(1, separation(a, b)), zoom: camera.zoom };
+    hint.classList.toggle('hidden', tracks.length > 0);
+  }
+  function moveGesture() {
+    if (!gesture || !gesture.ids.every(id => pointers.has(id))) return;
+    const [a, b] = gesture.ids.map(id => pointers.get(id));
+    const midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const zoom = gesture.zoom * Math.max(1, separation(a, b)) / gesture.distance;
+    setCamera(cameraMath.anchored(gesture.anchor, midpoint, zoom, width, height));
+  }
+  function finish(event, cancelled = false) {
+    if (!pointers.has(event.pointerId)) return;
+    if (inputState === 'drawing' && event.pointerId === pointerId && draft) {
+      if (!cancelled) append(event);
+      if (!cancelled && draft.length > 1) {
+        if (measure(draft).length >= MIN_LENGTH) { commitStroke(); railsDirty = true; }
+        else status.textContent = 'もうすこし ながく かいてみよう';
+      }
+      draft = null; draftTrack = null; pointerId = null;
+    }
+    pointers.delete(event.pointerId);
+    if (!pointers.size) { inputState = 'idle'; gesture = null; }
+    else {
+      inputState = 'cameraGesture';
+      if (gesture && gesture.ids.includes(event.pointerId)) {
+        gesture = null;
+        if (!cancelled && pointers.size >= 2) beginGesture();
+      }
+      if (cancelled) gesture = null;
+    }
+    release(event.pointerId);
     hint.classList.toggle('hidden', tracks.length > 0);
   }
   canvas.addEventListener('pointerdown', event => {
-    if (pointerId !== null || !event.isPrimary || event.button !== 0) return;
+    if (event.button !== 0 || pointers.has(event.pointerId)) return;
+    // Secondary touch contacts are essential for camera gestures; ignore secondary pens/mice.
+    if (event.isPrimary === false && event.pointerType !== 'touch') return;
     event.preventDefault();
-    draftWidth = width; draftHeight = height;
-    pointerId = event.pointerId; draft = [point(event)]; draftTrack = null;
-    canvas.setPointerCapture(pointerId); hint.classList.add('hidden');
+    pointers.set(event.pointerId, screenPoint(event)); canvas.setPointerCapture(event.pointerId);
+    if (pointers.size >= 2) {
+      if (pointers.size === 2) beginGesture();
+      return;
+    }
+    if (inputState !== 'idle') return;
+    inputState = 'drawing'; pointerId = event.pointerId;
+    draft = [point(event)]; draftTrack = null; hint.classList.add('hidden');
   });
   canvas.addEventListener('pointermove', event => {
-    if (event.pointerId !== pointerId) return;
-    event.preventDefault();
+    if (!pointers.has(event.pointerId)) return;
+    event.preventDefault(); pointers.set(event.pointerId, screenPoint(event));
+    if (inputState === 'cameraGesture') { moveGesture(); return; }
+    if (event.pointerId !== pointerId || !draft) return;
     const events = event.getCoalescedEvents ? event.getCoalescedEvents() : [];
     (events.length ? events : [event]).forEach(append);
   });
@@ -388,33 +439,52 @@
   canvas.addEventListener('pointercancel', event => finish(event, true));
   canvas.addEventListener('lostpointercapture', event => finish(event, true));
   canvas.addEventListener('contextmenu', event => event.preventDefault());
+  document.getElementById('home').addEventListener('click', () => {
+    cancelInput(); setCamera(cameraMath.initial());
+    status.textContent = 'まんなかに もどったよ';
+  });
   document.getElementById('clear').addEventListener('click', () => {
-    const released = pointerId;
+    resetInput();
     tracks.length = 0; trains.length = 0; tracksById.clear();
-    nextTrackId = 1; nextTrainId = 1;
-    draft = null; draftTrack = null; pointerId = null; lastTime = null;
-    effects.length = 0;
-    if (released !== null && canvas.hasPointerCapture(released)) canvas.releasePointerCapture(released);
+    nextTrackId = 1; nextTrainId = 1; lastTime = null; effects.length = 0;
     railsDirty = true; hint.classList.remove('hidden');
     status.textContent = routeName() + 'の はしから つなげるよ';
   });
   window.addEventListener('resize', resize);
-  document.addEventListener('visibilitychange', () => { lastTime = null; });
+  window.visualViewport?.addEventListener('resize', resize);
+  function restoreView() { resetInput(); lastTime = null; resize(); railsDirty = true; }
+  document.addEventListener('visibilitychange', restoreView);
+  window.addEventListener('pageshow', restoreView);
+  window.addEventListener('blur', resetInput);
+  for (const surface of [canvas, railLayer]) {
+    surface.addEventListener('contextlost', event => { event.preventDefault(); railsDirty = true; });
+    surface.addEventListener('contextrestored', restoreView);
+  }
 
   function frame(time) {
+    if (dpr !== Math.min(window.devicePixelRatio || 1, 3)) resize();
     const dt = lastTime === null ? 0 : Math.min((time - lastTime) / 1000, 0.05);
     lastTime = time;
     if (railsDirty) {
+      railCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
       railCtx.clearRect(0, 0, width, height);
+      worldTransform(railCtx);
       // Roads below rails at crossings; no junction or stopping logic yet.
       tracks.filter(t => t.kind === 'road').forEach(track => drawRoad(railCtx, track));
       tracks.filter(t => t.kind === 'rail').forEach(track => drawRails(railCtx, track, true));
       railsDirty = false;
     }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
+    // White paper with a quiet boundary; no 5000px bitmap is allocated.
+    ctx.fillStyle = '#edf1ee'; ctx.fillRect(0, 0, width, height);
+    worldTransform(ctx);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cameraMath.WORLD_WIDTH, cameraMath.WORLD_HEIGHT);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.drawImage(railLayer, 0, 0, width, height);
+    worldTransform(ctx);
     if (draft && draft.length > 1) {
-      if (!draftTrack) draftTrack = project(smooth(draft), draftWidth, draftHeight);
+      if (!draftTrack) draftTrack = worldPath(smooth(draft));
       if (mode === 'road') drawRoad(ctx, draftTrack);
       else drawRails(ctx, draftTrack, true);
     }
@@ -433,6 +503,7 @@
       drawFormation(track, train);
     }
     drawEffects(dt);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     requestAnimationFrame(frame);
   }
   refreshChoices();

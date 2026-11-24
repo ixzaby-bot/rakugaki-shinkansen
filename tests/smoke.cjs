@@ -8,24 +8,26 @@ let animationRequests = 0;
 const listeners = {};
 const windowEvents = {};
 const documentEvents = {};
-let captured = null;
+let captured = null; const captures = new Set();
 let drawCalls = 0;
+let recordTransforms = false; const transforms = [];
 let recordRotations = false; const rotations = [];
 const context = new Proxy({}, { get: (_, key) => (...args) => {
   for (const arg of args) if (typeof arg === 'number') assert.ok(Number.isFinite(arg), `Non-finite ${key}`);
+  if (recordTransforms && key === 'setTransform') transforms.push(args);
   if (recordRotations && key === 'rotate') rotations.push(args[0]);
   drawCalls++;
 }, set: () => true });
 const canvas = {
   getContext: () => context, getBoundingClientRect: () => rect,
   addEventListener: (name, fn) => { listeners[name] = fn; },
-  setPointerCapture: id => { captured = id; },
-  hasPointerCapture: id => captured === id,
-  releasePointerCapture: () => { captured = null; }
+  setPointerCapture: id => { captured = id; captures.add(id); },
+  hasPointerCapture: id => captures.has(id),
+  releasePointerCapture: id => { captures.delete(id); captured = captures.size ? [...captures][0] : null; }
 };
 const status = {};
 const hint = { classList: { add() {}, remove() {}, toggle() {} } };
-let clear;
+let clear, home; const zoomOutput = {};
 const types = ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'];
 const choices = types.map(type => ({
   dataset: { trainType: type }, pressed: String(type === 'hayabusa'),
@@ -40,9 +42,9 @@ const modeButtons = ['rail', 'road'].map(mode => ({
 let recordArt = false;
 const artCalls = [];
 const sandbox = {
-  document: { getElementById: id => ({ canvas, status, hint, 'hint-text': {}, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
+  document: { getElementById: id => ({ canvas, status, hint, 'hint-text': {}, zoom: zoomOutput, home: { addEventListener: (_, fn) => { home = fn; } }, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
     querySelectorAll: selector => selector === '[data-mode]' ? modeButtons : choices,
-    createElement: () => ({ getContext: () => context }),
+    createElement: () => ({ getContext: () => context, addEventListener() {} }),
     addEventListener: (name, fn) => { documentEvents[name] = fn; } },
   window: { devicePixelRatio: 2, addEventListener: (name, fn) => { windowEvents[name] = fn; } },
   requestAnimationFrame: fn => { scheduled = fn; animationRequests++; }
@@ -52,9 +54,10 @@ let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'
 source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
-    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode };
-}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad, drawTrain }; })();`);
+    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode, camera, inputState, pointers, railsDirty, dpr };
+}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad, drawTrain, screenToWorld, worldToScreen, setCamera }; })();`);
 vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../camera.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../vehicles.js'), 'utf8'), sandbox);
 const art = sandbox.window.TrainArt;
 sandbox.window.TrainArt = { ...art, drawCar(...args) {
@@ -67,7 +70,11 @@ const { formation, carPoses, smooth, sample, measure } = sandbox.testing;
 const near = (actual, expected, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} != ${expected}`);
 let time = 0;
 const tick = (n = 1) => { for (let i = 0; i < n; i++) scheduled(time += 16); };
-const event = (x, y, id = 1) => ({ clientX: x + rect.left, clientY: y + rect.top, pointerId: id, isPrimary: true, button: 0, preventDefault() {} });
+// Legacy geometric fixtures are world positions, converted through the public camera math.
+const event = (x, y, id = 1) => {
+  const p = sandbox.testing.worldToScreen({ x, y });
+  return { clientX: p.x + rect.left, clientY: p.y + rect.top, pointerId: id, pointerType: 'touch', isPrimary: id === 1, button: 0, preventDefault() {} };
+};
 function draw(points) {
   listeners.pointerdown(event(...points[0]));
   points.slice(1).forEach(p => listeners.pointermove(event(...p)));
@@ -102,7 +109,7 @@ const originalSource = state().active.source;
 const oldDistance = state().distance;
 rect = { left: 0, top: 0, width: 844, height: 390 };
 windowEvents.resize();
-assert.ok(Math.abs(state().active.length - oldLength * 390 / 844) < 1e-8);
+assert.ok(Math.abs(state().active.length - oldLength) < 1e-8);
 assert.equal(canvas.width, 1688);
 for (let i = 0; i < 20; i++) {
   rect = { left: 17, top: 29, width: 390, height: 844 };
@@ -117,10 +124,11 @@ for (let i = 0; i < 20; i++) {
 tick();
 listeners.pointerdown(event(20, 30));
 listeners.pointerdown(event(100, 100, 2));
-assert.equal(state().pointerId, 1);
+assert.equal(state().pointerId, null); // v0.3.1 second finger cancels the draft.
 listeners.pointercancel(event(20, 30));
 assert.equal(state().draft, null);
 assert.equal(state().tracks.length, 3);
+listeners.pointerup(event(100,100,2));
 listeners.pointerdown(event(10, 10));
 listeners.pointermove(event(60, 10));
 clear();
@@ -336,7 +344,7 @@ const during = state().distance; tick(20); assert.notEqual(state().distance, dur
 listeners.pointercancel(event(900, 300)); assert.equal(state().tracks.length, 1);
 const beforeRotate = state().active.source;
 rect = { left: 0, top: 0, width: 600, height: 450 }; windowEvents.resize();
-const beforeJoin = currentPoses(); stroke([[400, 150], [550, 150]]); unchanged(beforeJoin);
+const beforeJoin = currentPoses(); stroke([[800, 300], [1100, 300]]); unchanged(beforeJoin);
 assert.notEqual(state().active.source, beforeRotate);
 const joinedPoints = JSON.stringify(state().active.points);
 for (let i = 0; i < 10; i++) {
@@ -551,7 +559,7 @@ listeners.pointerdown(event(30, 30)); listeners.pointermove(event(500, 30));
 const beforeLive = Array.from(state().trains, t => t.distance); tick(5);
 state().trains.forEach((t, i) => assert.notEqual(t.distance, beforeLive[i]));
 // Switching mode while drawing cancels the draft and releases capture.
-modeButtons[0].click(); assert.equal(state().draft, null); assert.equal(captured, null);
+modeButtons[0].click(); assert.equal(state().draft, null);
 listeners.pointerup(event(500, 30)); assert.equal(state().tracks.length, 10);
 // Repeat landscape/portrait round trips without coordinate accumulation.
 const roadOriginalSources = state().tracks.map(t => t.source);
@@ -645,9 +653,9 @@ function outerRoadWidth() {
 }
 near(outerRoadWidth(), 36);
 rect = { left: 0, top: 0, width: 600, height: 450 }; windowEvents.resize();
-near(outerRoadWidth(), 18);
-stroke([[350,50],[500,50]]);
-assert.equal(state().tracks.length, 1); near(outerRoadWidth(), 18);
+near(outerRoadWidth(), 36);
+stroke([[700,100],[1000,100]]);
+assert.equal(state().tracks.length, 1); near(outerRoadWidth(), 36);
 rect = { left: 0, top: 0, width: 1200, height: 900 }; windowEvents.resize();
 near(outerRoadWidth(), 36);
 console.log('PASS road width remains proportional across resize and extension rebasing.');
@@ -661,3 +669,109 @@ facingCar.direction = -1; sandbox.testing.drawTrain(facingPose, 0, 1, 1, facingC
 recordRotations = false;
 near(rotations[1] - rotations[0], Math.PI);
 console.log('PASS car render orientation reverses by PI at unchanged center.');
+
+// v0.3.1 camera/input contract: actual CSS screen events, independent of old world fixtures.
+clear(); home();
+rect = { left: 17, top: 29, width: 390, height: 844 }; windowEvents.resize();
+const camMath = sandbox.window.WorldCamera;
+const { setCamera, screenToWorld, worldToScreen } = sandbox.testing;
+near(state().camera.x, 2500); near(state().camera.y, 2500); near(state().camera.zoom, 1);
+assert.equal(zoomOutput.textContent, '100%');
+const cssEvent = (x,y,id=1) => ({ clientX:x+rect.left,clientY:y+rect.top,pointerId:id,
+  pointerType:'touch',isPrimary:id===1,button:0,preventDefault(){} });
+const cssDown = (x,y,id=1) => listeners.pointerdown(cssEvent(x,y,id));
+const cssMove = (x,y,id=1) => listeners.pointermove(cssEvent(x,y,id));
+const cssUp = (x,y,id=1) => listeners.pointerup(cssEvent(x,y,id));
+for (const zoom of [.5,1,3]) {
+  setCamera({x:2300,y:2600,zoom});
+  for (const p of [{x:0,y:0},{x:2500,y:2500},{x:5000,y:5000}]) {
+    const round = screenToWorld(worldToScreen(p)); near(round.x,p.x); near(round.y,p.y);
+  }
+}
+// Finger two cancels a real unfinished stroke; simultaneous pan keeps its anchor.
+home(); const oldCount = state().tracks.length;
+cssDown(100,200); cssMove(120,200); assert.ok(state().draft);
+cssDown(280,200,2); assert.equal(state().draft,null); assert.equal(state().inputState,'cameraGesture');
+const anchor = screenToWorld({x:200,y:200});
+cssMove(160,230); cssMove(320,230,2);
+const anchoredPoint = worldToScreen(anchor); near(anchoredPoint.x,240); near(anchoredPoint.y,230);
+near(state().camera.x,2460); near(state().camera.y,2470);
+cssUp(320,230,2); cssMove(200,250); assert.equal(state().draft,null);
+cssUp(200,250); assert.equal(state().tracks.length,oldCount); assert.equal(state().inputState,'idle');
+// Pinch uses the start midpoint's world position, not the center of the viewport.
+home(); cssDown(100,250); cssDown(200,250,2);
+const pinchAnchor = screenToWorld({x:150,y:250});
+cssMove(0,300); cssMove(300,300,2); near(state().camera.zoom,3);
+let anchoredScreen = worldToScreen(pinchAnchor); near(anchoredScreen.x,150); near(anchoredScreen.y,300);
+cssMove(-100,300); cssMove(400,300,2); near(state().camera.zoom,3);
+cssMove(145,300); cssMove(155,300,2); near(state().camera.zoom,.5);
+anchoredScreen=worldToScreen(pinchAnchor); near(anchoredScreen.x,150); near(anchoredScreen.y,300);
+cssUp(145,300); cssUp(155,300,2); assert.equal(state().tracks.length,0);
+// Cancel/lost capture/third finger and replacement pair do not create paths.
+home(); cssDown(50,200); cssMove(100,200); listeners.pointercancel(cssEvent(100,200));
+assert.equal(state().tracks.length,0); assert.equal(captures.size,0);
+cssDown(50,200); cssDown(150,200,2); cssDown(250,200,3);
+cssUp(50,200); cssMove(170,220,2); cssMove(270,220,3);
+listeners.lostpointercapture(cssEvent(170,220,2)); cssMove(280,230,3); cssUp(280,230,3);
+assert.equal(state().tracks.length,0); assert.equal(state().inputState,'idle');
+// Clamping is deterministic, including viewports larger than the whole world.
+for (const zoom of [.5,1,3]) {
+  setCamera({x:-1e9,y:1e9,zoom});
+  near(state().camera.x,rect.width/(2*zoom));
+  near(state().camera.y,5000-rect.height/(2*zoom));
+  const before = JSON.stringify(state().camera); setCamera(state().camera); assert.equal(JSON.stringify(state().camera),before);
+}
+const oversized=camMath.clamp({x:-1e6,y:1e6,zoom:.5},4000,4000);
+near(oversized.x,2500); near(oversized.y,2500);
+// Each zoom uses 28 screen px endpoint tolerance, capped at 56 world units.
+for (const zoom of [.5,1,3]) for (const kindIndex of [0,1]) for(const gapPx of [28,29]) {
+  clear(); modeButtons[kindIndex].click(); setCamera({x:2500,y:2500,zoom});
+  stroke([[2350,2500],[2650,2500]]);
+  const firstVehicle=state().trains[0], before=carPoses(state().tracks[0],firstVehicle.distance,firstVehicle)[0];
+  stroke([[2650+gapPx/zoom,2500],[2850,2500]]);
+  assert.equal(state().tracks.length,gapPx===28?1:2);
+  if(gapPx===28){const after=carPoses(state().tracks[0],firstVehicle.distance,firstVehicle)[0];near(after.x,before.x);near(after.y,before.y);}
+}
+// 5 trains + 5 cars: camera, zoom, rotation and DPR never mutate world data.
+clear(); home();
+for(let i=0;i<10;i++){
+  modeButtons[i%2].click(); choices[i%5].click();
+  stroke([[2200,2100+i*70],[3000,2100+i*70]]);
+}
+tick(10);
+const worldBefore=JSON.stringify(state().tracks), vehiclesBefore=JSON.stringify(state().trains);
+setCamera({x:4200,y:4200,zoom:3});
+rect={left:13,top:37,width:844,height:390}; windowEvents.resize();
+sandbox.window.devicePixelRatio=3; windowEvents.resize();
+assert.equal(canvas.width,2532); assert.equal(canvas.height,1170);
+assert.equal(JSON.stringify(state().tracks),worldBefore);assert.equal(JSON.stringify(state().trains),vehiclesBefore);
+const travelBefore=state().trains.map(t=>t.distance);tick(20);
+state().trains.forEach((t,i)=>assert.notEqual(t.distance,travelBefore[i]));
+const runningBeforeHome=JSON.stringify(state().trains);home();
+assert.equal(JSON.stringify(state().trains),runningBeforeHome);assert.equal(JSON.stringify(state().tracks),worldBefore);
+near(state().camera.x,2500);near(state().camera.y,2500);near(state().camera.zoom,1);
+// Restore invalidates the viewport cache and resets elapsed time, never routes.
+tick();assert.equal(state().railsDirty,false);
+documentEvents.visibilitychange();assert.equal(state().railsDirty,true);
+const pausedProgress=JSON.stringify(state().trains);time+=3600000;tick();
+assert.equal(JSON.stringify(state().trains),pausedProgress);assert.equal(JSON.stringify(state().tracks),worldBefore);
+windowEvents.pageshow();assert.equal(state().railsDirty,true);tick();
+// This is simulated restoration, not a Safari long-suspension test (C-32).
+clear();home();setCamera({x:3000,y:2800,zoom:.5});modeButtons[1].click();
+const firstExpected=screenToWorld({x:100,y:180});
+cssDown(100,180);cssMove(300,180);cssUp(300,180);
+near(state().tracks[0].points[0].x,firstExpected.x);near(state().tracks[0].points[0].y,firstExpected.y);
+assert.equal(state().tracks[0].kind,'road');
+// Home cancels a stroke and keeps it blocked until that contact lifts.
+const countBeforeHome=state().tracks.length;cssDown(100,280);cssMove(200,280);home();cssMove(300,280);cssUp(300,280);
+assert.equal(state().tracks.length,countBeforeHome);
+clear();cssDown(100,180);cssMove(300,180);cssUp(300,180);assert.equal(state().trains.length,1);
+assert.ok(canvas.width<5000 && canvas.height<5000);
+console.log('PASS C-01..27/29..30 camera logic: CSS/world round-trip, pan/pinch anchor and bounds, contacts/cancel, 0.5/1/3x snapping, offscreen motion, resize/DPR immutability, home, simulated restore. C-28/31/32 need browser/device checks.');
+
+// Every frame installs absolute DPR/camera matrices and returns to screen space.
+setCamera({x:2400,y:2600,zoom:3});recordTransforms=true;tick(2);recordTransforms=false;
+const expectedMatrix=[9,0,0,9,3*(rect.width/2-2400*3),3*(rect.height/2-2600*3)];
+assert.ok(transforms.some(m=>m.every((n,i)=>Math.abs(n-expectedMatrix[i])<1e-8)));
+assert.deepEqual(transforms.at(-1),[3,0,0,3,0,0]);
+console.log('PASS absolute DPR/world transforms and screen-space restoration, no accumulation.');

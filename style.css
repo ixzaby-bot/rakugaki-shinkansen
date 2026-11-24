@@ -55,3 +55,10 @@ footer { bottom: calc(92px + env(safe-area-inset-bottom)); }
 
 @media (max-width: 400px) { .train-choice span { font-size: 10px; } }
 @media (max-height: 500px) { .hint-line { display: none; } .hint { top: 70px; bottom: 145px; } .hint p { font-size: 20px; line-height: 1.4; margin: 0; } }
+
+#camera-controls { position: absolute; top: calc(80px + env(safe-area-inset-top)); right: max(18px, env(safe-area-inset-right)); display: flex; align-items: center; gap: 8px; }
+#home { min-height: 46px; font-size: 14px; padding: 6px 12px; border-radius: 14px; }
+#zoom { min-width: 42px; font-size: 12px; color: #56736a; pointer-events: none; }
+.gesture-help { font-size: 11px; color: #69847a; pointer-events: none; }
+@media (max-width: 650px) { #camera-controls { top: calc(103px + env(safe-area-inset-top)); left: 12px; right: auto; } .gesture-help { max-width: 130px; } }
+@media (max-height: 500px) and (min-width: 501px) { #camera-controls { top: calc(68px + env(safe-area-inset-top)); right: 12px; left: auto; } .gesture-help { display: none; } .hint { top: 118px; } .hint p { font-size: 16px; } }
