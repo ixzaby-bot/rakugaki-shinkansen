@@ -6,23 +6,25 @@
   <meta name="theme-color" content="#16866d">
   <meta name="description" content="線路と道路を描いて、列車や自動車を走らせるお絵描きゲーム。">
   <title>らくがき新幹線</title>
-  <link rel="stylesheet" href="style.css?v=0.3.1">
-  <script src="vehicles.js?v=0.3.1" defer></script>
-  <script src="camera.js?v=0.3.1" defer></script>
-  <script src="script.js?v=0.3.1" defer></script>
+  <link rel="stylesheet" href="style.css?v=0.3.2">
+  <script src="vehicles.js?v=0.3.2" defer></script>
+  <script src="camera.js?v=0.3.2" defer></script>
+  <script src="edge.js?v=0.3.2" defer></script>
+  <script src="script.js?v=0.3.2" defer></script>
 </head>
 <body>
   <main id="game" aria-label="らくがき新幹線">
     <canvas id="canvas" aria-label="指やマウスで線路や道路を描くキャンバス">Canvasに対応したブラウザで遊んでください。</canvas>
+    <div id="edge-guide" aria-hidden="true"></div>
     <header class="heading"><h1>らくがき<span>新幹線</span></h1><p>きみの せんろを はしるよ</p></header>
     <div id="hint" class="hint"><span class="hint-line" aria-hidden="true">〰</span><p id="hint-text">ゆびで せんろを かいてみよう！</p></div>
-    <footer><p id="status" role="status">せんろの はしから つなげるよ</p><button id="clear" type="button"><span aria-hidden="true">↺</span> ぜんぶけす</button></footer>
-    <div id="camera-controls"><button id="home" type="button" aria-label="カメラを中央へ戻す">⌂ まんなか</button><output id="zoom" aria-label="ズーム倍率">100%</output><span class="gesture-help">2ほんゆびで うごかす・ひろげる</span></div>
-    <nav id="mode-picker" aria-label="描くものを選ぶ">
+    <footer><p id="status" role="status">せんろの はしから つなげるよ</p><button id="clear" data-drawing-ui type="button"><span aria-hidden="true">↺</span> ぜんぶけす</button></footer>
+    <div id="camera-controls" data-drawing-ui><button id="home" type="button" aria-label="カメラを中央へ戻す">⌂ まんなか</button><output id="zoom" aria-label="ズーム倍率">100%</output><span class="gesture-help">2ほんゆびで うごかす・ひろげる</span></div>
+    <nav id="mode-picker" data-drawing-ui aria-label="描くものを選ぶ">
       <button type="button" data-mode="rail" aria-pressed="true">🚄 せんろ</button>
       <button type="button" data-mode="road" aria-pressed="false">🚗 どうろ</button>
     </nav>
-    <nav id="train-picker" aria-label="これから描く乗り物を選ぶ">
+    <nav id="train-picker" data-drawing-ui aria-label="これから描く乗り物を選ぶ">
       <button type="button" class="train-choice" data-train-type="hayabusa" aria-pressed="true"><canvas class="train-icon" width="140" height="80" aria-hidden="true"></canvas><span>はやぶさ</span></button>
       <button type="button" class="train-choice" data-train-type="komachi" aria-pressed="false"><canvas class="train-icon" width="140" height="80" aria-hidden="true"></canvas><span>こまち</span></button>
       <button type="button" class="train-choice" data-train-type="kagayaki" aria-pressed="false"><canvas class="train-icon" width="140" height="80" aria-hidden="true"></canvas><span>かがやき</span></button>

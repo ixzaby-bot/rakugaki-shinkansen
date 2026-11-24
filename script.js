@@ -53,6 +53,9 @@
   const CONNECT_RADIUS = 28; // CSS px; endpoint snapping tolerance
   const MAX_CONNECT_WORLD = 56;
   const cameraMath = window.WorldCamera;
+  const edge = window.EdgeScroll;
+  document.getElementById('game').style.setProperty('--edge-size', edge.SIZE + 'px');
+  let edgePoint = null, drawingAge = 0;
   const camera = cameraMath.initial();
   const pointers = new Map();
   let inputState = 'idle', gesture = null;
@@ -339,6 +342,7 @@
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     width = rect.width; height = rect.height;
+    edgePoint = null; // A stationary contact must be reported again after viewport changes.
     dpr = Math.min(window.devicePixelRatio || 1, 3);
     for (const surface of [canvas, railLayer]) {
       surface.width = Math.round(width * dpr); surface.height = Math.round(height * dpr);
@@ -362,7 +366,9 @@
       draft.push(p); draftTrack = null;
     }
   }
+  function stopEdge() { edgePoint = null; drawingAge = 0; }
   function cancelInput() {
+    stopEdge();
     draft = null; draftTrack = null; pointerId = null; gesture = null;
     inputState = pointers.size ? 'cameraGesture' : 'idle';
     hint.classList.toggle('hidden', tracks.length > 0);
@@ -374,6 +380,7 @@
     const ids = [...pointers.keys()]; pointers.clear(); cancelInput(); ids.forEach(release);
   }
   function beginGesture() {
+    stopEdge();
     draft = null; draftTrack = null; pointerId = null;
     inputState = 'cameraGesture';
     const pair = [...pointers.entries()].slice(0, 2);
@@ -393,6 +400,7 @@
   function finish(event, cancelled = false) {
     if (!pointers.has(event.pointerId)) return;
     if (inputState === 'drawing' && event.pointerId === pointerId && draft) {
+      stopEdge();
       if (!cancelled) append(event);
       if (!cancelled && draft.length > 1) {
         if (measure(draft).length >= MIN_LENGTH) { commitStroke(); railsDirty = true; }
@@ -425,6 +433,7 @@
     }
     if (inputState !== 'idle') return;
     inputState = 'drawing'; pointerId = event.pointerId;
+    drawingAge = 0; edgePoint = screenPoint(event);
     draft = [point(event)]; draftTrack = null; hint.classList.add('hidden');
   });
   canvas.addEventListener('pointermove', event => {
@@ -432,6 +441,7 @@
     event.preventDefault(); pointers.set(event.pointerId, screenPoint(event));
     if (inputState === 'cameraGesture') { moveGesture(); return; }
     if (event.pointerId !== pointerId || !draft) return;
+    edgePoint = screenPoint(event);
     const events = event.getCoalescedEvents ? event.getCoalescedEvents() : [];
     (events.length ? events : [event]).forEach(append);
   });
@@ -450,6 +460,10 @@
     railsDirty = true; hint.classList.remove('hidden');
     status.textContent = routeName() + 'の はしから つなげるよ';
   });
+  // A second contact on UI must not leave the first contact edge-scrolling underneath it.
+  document.querySelectorAll('[data-drawing-ui]').forEach(control => control.addEventListener('pointerdown', () => {
+    if (inputState !== 'idle') cancelInput();
+  }));
   window.addEventListener('resize', resize);
   window.visualViewport?.addEventListener('resize', resize);
   function restoreView() { resetInput(); lastTime = null; resize(); railsDirty = true; }
@@ -461,10 +475,39 @@
     surface.addEventListener('contextrestored', restoreView);
   }
 
+  function updateEdge(dt) {
+    if (inputState !== 'drawing' || !draft || pointers.size !== 1 || !edgePoint) return;
+    const before = drawingAge;
+    drawingAge += dt;
+    const activeDt = Math.max(0, drawingAge - edge.DELAY) - Math.max(0, before - edge.DELAY);
+    if (!activeDt) return;
+    const rect = canvas.getBoundingClientRect();
+    const hit = document.elementFromPoint(edgePoint.x + rect.left, edgePoint.y + rect.top);
+    if (hit?.closest?.('[data-drawing-ui]')) return;
+    const velocity = edge.velocity(edgePoint, width, height);
+    if (!velocity.x && !velocity.y) return;
+    const next = cameraMath.clamp({ x: camera.x + velocity.x * activeDt / camera.zoom,
+      y: camera.y + velocity.y * activeDt / camera.zoom, zoom: camera.zoom }, width, height);
+    if (next.x === camera.x && next.y === camera.y) return;
+    setCamera(next);
+    const world = screenToWorld(edgePoint);
+    const p = { x: Math.max(0, Math.min(cameraMath.WORLD_WIDTH, world.x)),
+      y: Math.max(0, Math.min(cameraMath.WORLD_HEIGHT, world.y)) };
+    const last = draft[draft.length - 1], gap = separation(last, p);
+    if (gap * camera.zoom < 2) return;
+    // Fill long frame steps at the existing geometry sampling scale.
+    const steps = Math.max(1, Math.ceil(gap / Math.min(6, 6 / camera.zoom)));
+    for (let i = 1; i <= steps; i++) draft.push({
+      x: last.x + (p.x - last.x) * i / steps, y: last.y + (p.y - last.y) * i / steps });
+    draftTrack = null;
+  }
+
   function frame(time) {
     if (dpr !== Math.min(window.devicePixelRatio || 1, 3)) resize();
-    const dt = lastTime === null ? 0 : Math.min((time - lastTime) / 1000, 0.05);
+    const elapsed = lastTime === null ? 0 : Math.max(0, (time - lastTime) / 1000);
+    const dt = Math.min(elapsed, 0.05);
     lastTime = time;
+    updateEdge(Math.min(elapsed, edge.MAX_DT));
     if (railsDirty) {
       railCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
       railCtx.clearRect(0, 0, width, height);

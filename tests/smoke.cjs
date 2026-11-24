@@ -27,6 +27,8 @@ const canvas = {
 };
 const status = {};
 const hint = { classList: { add() {}, remove() {}, toggle() {} } };
+let uiPointerDown;
+let overUi = false; const gameStyle = {};
 let clear, home; const zoomOutput = {};
 const types = ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'];
 const choices = types.map(type => ({
@@ -42,8 +44,9 @@ const modeButtons = ['rail', 'road'].map(mode => ({
 let recordArt = false;
 const artCalls = [];
 const sandbox = {
-  document: { getElementById: id => ({ canvas, status, hint, 'hint-text': {}, zoom: zoomOutput, home: { addEventListener: (_, fn) => { home = fn; } }, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
-    querySelectorAll: selector => selector === '[data-mode]' ? modeButtons : choices,
+  document: { getElementById: id => ({ game: { style: { setProperty: (key,value) => { gameStyle[key]=value; } } }, canvas, status, hint, 'hint-text': {}, zoom: zoomOutput, home: { addEventListener: (_, fn) => { home = fn; } }, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
+    elementFromPoint: () => ({ closest: () => overUi }),
+    querySelectorAll: selector => selector === '[data-mode]' ? modeButtons : selector === '[data-drawing-ui]' ? [{ addEventListener: (_,fn) => { uiPointerDown=fn; } }] : choices,
     createElement: () => ({ getContext: () => context, addEventListener() {} }),
     addEventListener: (name, fn) => { documentEvents[name] = fn; } },
   window: { devicePixelRatio: 2, addEventListener: (name, fn) => { windowEvents[name] = fn; } },
@@ -54,9 +57,10 @@ let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'
 source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
-    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode, camera, inputState, pointers, railsDirty, dpr };
+    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode, camera, inputState, pointers, railsDirty, dpr, edgePoint, drawingAge };
 }; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad, drawTrain, screenToWorld, worldToScreen, setCamera }; })();`);
 vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../edge.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../camera.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../vehicles.js'), 'utf8'), sandbox);
 const art = sandbox.window.TrainArt;
@@ -775,3 +779,76 @@ const expectedMatrix=[9,0,0,9,3*(rect.width/2-2400*3),3*(rect.height/2-2600*3)];
 assert.ok(transforms.some(m=>m.every((n,i)=>Math.abs(n-expectedMatrix[i])<1e-8)));
 assert.deepEqual(transforms.at(-1),[3,0,0,3,0,0]);
 console.log('PASS absolute DPR/world transforms and screen-space restoration, no accumulation.');
+
+// v0.3.2: frame-driven edge scrolling, using stationary CSS pointer positions.
+const edgeConfig = sandbox.window.EdgeScroll;
+assert.equal(edgeConfig.SIZE,48); assert.equal(gameStyle['--edge-size'],'48px');
+const advance = (n,ms=16) => { for(let i=0;i<n;i++) scheduled(time+=ms); };
+function edgeSetup(kind=0,zoom=1) {
+  clear();home();modeButtons[kind].click();
+  rect={left:17,top:29,width:320,height:568};windowEvents.resize();
+  setCamera({x:2500,y:2500,zoom});overUi=false;tick();
+}
+edgeSetup();cssDown(160,280);advance(60);near(state().camera.x,2500);near(state().camera.y,2500);cssUp(160,280);
+for(const [x,y,sx,sy] of [[320,280,1,0],[0,280,-1,0],[160,0,0,-1],[160,568,0,1],[320,568,1,1]]){
+  edgeSetup();cssDown(x,y);advance(9); // 144ms: delay has not expired.
+  near(state().camera.x,2500);near(state().camera.y,2500);
+  advance(31); // 640ms total; 490ms active at full 240 CSS px/s.
+  near(state().camera.x,2500+sx*240*.49,1e-6);near(state().camera.y,2500+sy*240*.49,1e-6);
+  assert.ok(state().draft.length>2);
+  for(let i=1;i<state().draft.length;i++)assert.ok(Math.hypot(state().draft[i].x-state().draft[i-1].x,state().draft[i].y-state().draft[i-1].y)<=6.000001);
+  const stopped=JSON.stringify(state().camera);cssMove(160,280);advance(30);assert.equal(JSON.stringify(state().camera),stopped);
+  cssUp(160,280);assert.equal(state().trains.length,1);advance(30);assert.equal(JSON.stringify(state().camera),stopped);
+}
+// Quadratic speed, zoom-invariant screen distance, 60-ish/20/10 FPS agreement.
+for(const zoom of [.5,1,3])for(const ms of [10,50,100]){
+  edgeSetup(1,zoom);cssDown(308,280);advance(1000/ms,ms);
+  const screenDistance=(state().camera.x-2500)*zoom;
+  near(screenDistance,240*(36/48)**2*.85,1e-6);
+  assert.ok(state().draft.length>2);cssUp(308,280);assert.equal(state().tracks[0].kind,'road');
+}
+// Every boundary stops without duplicate points; the unblocked diagonal axis continues.
+for(const [x,y,cx,cy] of [[320,280,4840,2500],[0,280,160,2500],[160,0,2500,284],[160,568,2500,4716]]){
+  edgeSetup();setCamera({x:cx,y:cy,zoom:1});cssDown(x,y);advance(100);
+  near(state().camera.x,cx);near(state().camera.y,cy);assert.equal(state().draft.length,1);cssUp(x,y);
+  assert.equal(state().trains.length,0);
+}
+edgeSetup();setCamera({x:4840,y:2500,zoom:1});cssDown(320,568);advance(60);
+near(state().camera.x,4840);assert.ok(state().camera.y>2500);cssUp(320,568);
+// Outside the Canvas, UI hit-testing, second finger, cancel and home all stop scrolling.
+edgeSetup();cssDown(320,280);advance(30);cssMove(321,280);
+let stoppedEdge=JSON.stringify(state().camera);advance(30);assert.equal(JSON.stringify(state().camera),stoppedEdge);
+cssMove(320,280);overUi=true;advance(30);assert.equal(JSON.stringify(state().camera),stoppedEdge);overUi=false;
+cssDown(150,280,2);assert.equal(state().draft,null);advance(30);assert.equal(JSON.stringify(state().camera),stoppedEdge);
+cssUp(150,280,2);cssMove(310,280);advance(30);assert.equal(JSON.stringify(state().camera),stoppedEdge);cssUp(310,280);assert.equal(state().trains.length,0);
+edgeSetup();cssDown(320,280);advance(30);listeners.pointercancel(cssEvent(320,280));
+stoppedEdge=JSON.stringify(state().camera);advance(30);assert.equal(JSON.stringify(state().camera),stoppedEdge);assert.equal(state().trains.length,0);
+edgeSetup();cssDown(320,280);advance(30);uiPointerDown();assert.equal(state().draft,null);
+stoppedEdge=JSON.stringify(state().camera);advance(30);assert.equal(JSON.stringify(state().camera),stoppedEdge);cssUp(320,280);assert.equal(state().trains.length,0);
+// Both kinds extend from an existing endpoint while moving the camera; IDs/types/poses persist.
+for(const kind of [0,1]){
+  edgeSetup(kind);const a=screenToWorld({x:60,y:280}),b=screenToWorld({x:280,y:280});
+  stroke([[a.x,a.y],[b.x,b.y]]);tick(5);
+  const vehicle=state().trains[0],route=state().tracks[0],id=vehicle.id,type=vehicle.type;
+  cssDown(280,280);cssMove(315,280);advance(50);
+  const before=carPoses(route,vehicle.distance,vehicle)[0];cssUp(315,280);
+  assert.equal(state().trains.length,1);assert.equal(vehicle.id,id);assert.equal(vehicle.type,type);
+  const after=carPoses(route,vehicle.distance,vehicle)[0];near(after.x,before.x);near(after.y,before.y);
+  assert.ok(route.length>220);
+}
+// Rotation invalidates the old CSS pointer until a new move arrives; resume from the new rect.
+edgeSetup();cssDown(320,280);advance(30);rect={left:5,top:9,width:568,height:320};windowEvents.resize();
+stoppedEdge=JSON.stringify(state().camera);advance(30);assert.equal(JSON.stringify(state().camera),stoppedEdge);
+cssMove(568,160);advance(30);assert.ok(state().camera.x>JSON.parse(stoppedEdge).x);cssUp(568,160);
+// Recovery drops pointers; a huge elapsed interval is clamped even without a visibility signal.
+edgeSetup();cssDown(320,280);advance(30);const beforePause=state().camera.x;advance(1,3600000);
+assert.ok(state().camera.x-beforePause<=24.00001);
+documentEvents.visibilitychange();stoppedEdge=JSON.stringify(state().camera);advance(1,3600000);
+assert.equal(JSON.stringify(state().camera),stoppedEdge);assert.equal(state().draft,null);
+clear();cssDown(160,280);cssMove(260,280);cssUp(260,280);assert.equal(state().trains.length,1);
+// Mixed 10 vehicles continue during edge scrolling, with one shared RAF chain.
+edgeSetup();for(let i=0;i<10;i++){modeButtons[i%2].click();stroke([[2200,2100+i*70],[3000,2100+i*70]]);}tick(2);
+const mixedEdgeBefore=state().trains.map(t=>t.distance),edgeRequests=animationRequests;
+cssDown(320,280);advance(30);state().trains.forEach((t,i)=>assert.notEqual(t.distance,mixedEdgeBefore[i]));
+assert.equal(animationRequests-edgeRequests,30);listeners.pointercancel(cssEvent(320,280));assert.equal(state().trains.length,10);
+console.log('PASS E-01..23/25..29 logic: delay, 4 edges/diagonal, stationary points, quadratic speed, 0.5/1/3x, 10/20/100 FPS, boundary, UI/cancel/gesture, extension IDs, rotation, recovery and mixed vehicles. E-24/30..35 require browser/device checks; long suspension remains unverified.');

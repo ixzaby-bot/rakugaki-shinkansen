@@ -62,3 +62,12 @@ footer { bottom: calc(92px + env(safe-area-inset-bottom)); }
 .gesture-help { font-size: 11px; color: #69847a; pointer-events: none; }
 @media (max-width: 650px) { #camera-controls { top: calc(103px + env(safe-area-inset-top)); left: 12px; right: auto; } .gesture-help { max-width: 130px; } }
 @media (max-height: 500px) and (min-width: 501px) { #camera-controls { top: calc(68px + env(safe-area-inset-top)); right: 12px; left: auto; } .gesture-help { display: none; } .hint { top: 118px; } .hint p { font-size: 16px; } }
+
+/* One composited layer caps corner opacity at 13%, including overlapping edges. */
+#edge-guide { position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: .13;
+  background: linear-gradient(to right, #e8aa42, #e8aa4200 var(--edge-size)),
+    linear-gradient(to left, #e8aa42, #e8aa4200 var(--edge-size)),
+    linear-gradient(to bottom, #e8aa42, #e8aa4200 var(--edge-size)),
+    linear-gradient(to top, #e8aa42, #e8aa4200 var(--edge-size)); }
+.heading, .hint, footer, #camera-controls, #mode-picker, #train-picker { z-index: 2; }
+#camera-controls { background: #fff; border-radius: 14px; }
