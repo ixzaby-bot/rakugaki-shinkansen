@@ -9,6 +9,10 @@
   const trainArt = window.TrainArt;
   let mode = 'rail', selectedType = 'hayabusa', activeTool = 'draw';
   let eraseTap = null;
+  let previousTool = "draw", nextObjectId = 1;
+  const sketchStrokes = [], objects = [];
+  const sketchButton = document.getElementById("sketch");
+  const hasContent = () => tracks.length + objects.length + sketchStrokes.length > 0;
   const hitTest = window.PathHit;
   const eraseButton = document.getElementById('erase');
   const selections = { rail: 'hayabusa', road: 'police' };
@@ -31,14 +35,17 @@
     });
     modeButtons.forEach(button => button.setAttribute('aria-pressed', String(activeTool === 'draw' && button.dataset.mode === mode)));
     eraseButton.setAttribute('aria-pressed', String(activeTool === 'erase'));
+    sketchButton.setAttribute('aria-pressed', String(activeTool === 'sketch'));
+    document.getElementById('sketch-controls').hidden = activeTool !== 'sketch';
+    document.getElementById('train-picker').hidden = activeTool === 'sketch';
     document.getElementById('edge-guide').hidden = activeTool === 'erase';
-    document.getElementById('hint-text').textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : 'ゆびで ' + routeName() + 'を かいてみよう！';
+    document.getElementById('hint-text').textContent = activeTool === 'sketch' ? 'かいて へんしん！ なにに なるかな？' : activeTool === 'erase' ? 'けしたい ものを タッチ！' : 'ゆびで ' + routeName() + 'を かいてみよう！';
   }
   choices.forEach(button => button.addEventListener('click', () => {
     selectedType = button.dataset.trainType;
     selections[mode] = selectedType;
     refreshChoices();
-    status.textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : trainArt.types[selectedType].name + 'で かこう！';
+    status.textContent = activeTool === 'erase' ? 'けしたい ものを タッチ！' : trainArt.types[selectedType].name + 'で かこう！';
   }));
   modeButtons.forEach(button => button.addEventListener('click', () => {
     cancelInput();
@@ -47,9 +54,27 @@
     refreshChoices(); status.textContent = routeName() + 'の はしから つなげるよ';
   }));
   eraseButton.addEventListener('click', () => {
-    cancelInput(); activeTool = activeTool === 'draw' ? 'erase' : 'draw';
+    cancelInput();
+    if (activeTool === 'erase') activeTool = previousTool;
+    else { previousTool = activeTool; activeTool = 'erase'; }
     refreshChoices();
-    status.textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : routeName() + 'の はしから つなげるよ';
+    status.textContent = activeTool === 'erase' ? 'けしたい ものを タッチ！' : routeName() + 'の はしから つなげるよ';
+  });
+  sketchButton.addEventListener('click', () => {
+    cancelInput(); activeTool = 'sketch'; refreshChoices();
+    status.textContent = 'かけたら へんしん！';
+  });
+  document.getElementById('redraw').addEventListener('click', () => {
+    cancelInput(); sketchStrokes.length = 0; hint.classList.toggle('hidden', hasContent());
+    status.textContent = 'もういちど かいてみよう！';
+  });
+  document.getElementById('transform').addEventListener('click', () => {
+    cancelInput();
+    const result = window.SketchRecognizer.recognize(sketchStrokes, camera.zoom);
+    if (!result) { status.textContent = 'もうすこし かいてみよう！'; return; }
+    objects.push(window.Scenery.create(result, 'object-' + nextObjectId++));
+    sketchStrokes.length = 0; hint.classList.add('hidden');
+    status.textContent = window.Scenery.specs[result.type].label + 'に なった！';
   });
   // Shared route/vehicle arrays: kind filters topology, IDs remain globally unique.
   const tracks = [];
@@ -387,7 +412,7 @@
     for (let i = effects.length - 1; i >= 0; i--) if (effects[i].trackId === id) effects.splice(i, 1);
     if (eraseTap?.pathId === id) eraseTap = null;
     railsDirty = true;
-    hint.classList.toggle('hidden', tracks.length > 0);
+    hint.classList.toggle('hidden', hasContent());
     status.textContent = 'けしたよ！ つぎも タッチで けせるよ';
     return true;
   }
@@ -405,6 +430,15 @@
     }
   }
 
+  function findEraseTarget(world) {
+    return findPathAtPoint(world) || (usablePoint(worldToScreen(world)) ? objects.slice().reverse().find(o => window.Scenery.contains(world, o)) : null);
+  }
+  function drawSketch(stroke) {
+    if (!stroke.length) return;
+    ctx.save(); ctx.strokeStyle = '#9163b2'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(stroke[0].x, stroke[0].y);
+    stroke.forEach(p => ctx.lineTo(p.x, p.y)); ctx.stroke(); ctx.restore();
+  }
   function resize() {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -440,7 +474,7 @@
     eraseTap = null;
     draft = null; draftTrack = null; pointerId = null; gesture = null;
     inputState = pointers.size ? 'cameraGesture' : 'idle';
-    hint.classList.toggle('hidden', tracks.length > 0);
+    hint.classList.toggle('hidden', hasContent());
   }
   function release(id) {
     if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
@@ -458,7 +492,7 @@
     const midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     gesture = { ids: pair.map(entry => entry[0]), anchor: screenToWorld(midpoint),
       distance: Math.max(1, separation(a, b)), zoom: camera.zoom };
-    hint.classList.toggle('hidden', tracks.length > 0);
+    hint.classList.toggle('hidden', hasContent());
   }
   function moveGesture() {
     if (!gesture || !gesture.ids.every(id => pointers.has(id))) return;
@@ -472,8 +506,11 @@
     if (inputState === 'erasing') {
       updateEraseTap(event);
       if (!cancelled && eraseTap && pointers.size === 1 && usablePoint(screenPoint(event))) {
-        const target = findPathAtPoint(screenToWorld(screenPoint(event)));
-        if (target && target.id === eraseTap.pathId) removePath(target.id);
+        const target = findEraseTarget(screenToWorld(screenPoint(event)));
+        if (target && target.id === eraseTap.pathId) {
+          if (typeof target.id === 'number') removePath(target.id);
+          else { objects.splice(objects.indexOf(target), 1); status.textContent = 'けしたよ！'; }
+        }
       }
       eraseTap = null;
     }
@@ -481,7 +518,8 @@
       stopEdge();
       if (!cancelled) append(event);
       if (!cancelled && draft.length > 1) {
-        if (measure(draft).length >= MIN_LENGTH) { commitStroke(); railsDirty = true; }
+        if (activeTool === 'sketch') { sketchStrokes.push(draft.map(p => ({ ...p }))); status.textContent = 'つづけて かいても いいよ！'; }
+        else if (measure(draft).length >= MIN_LENGTH) { commitStroke(); railsDirty = true; }
         else status.textContent = 'もうすこし ながく かいてみよう';
       }
       draft = null; draftTrack = null; pointerId = null;
@@ -497,7 +535,7 @@
       if (cancelled) gesture = null;
     }
     release(event.pointerId);
-    hint.classList.toggle('hidden', tracks.length > 0);
+    hint.classList.toggle('hidden', hasContent());
   }
   canvas.addEventListener('pointerdown', event => {
     if (event.button !== 0 || pointers.has(event.pointerId)) return;
@@ -513,7 +551,7 @@
     if (activeTool === 'erase') {
       inputState = 'erasing';
       const start = screenPoint(event);
-      eraseTap = usablePoint(start) ? { start, pathId: findPathAtPoint(screenToWorld(start))?.id } : null;
+      eraseTap = usablePoint(start) ? { start, pathId: findEraseTarget(screenToWorld(start))?.id } : null;
       return;
     }
     inputState = 'drawing'; pointerId = event.pointerId;
@@ -541,9 +579,10 @@
   document.getElementById('clear').addEventListener('click', () => {
     resetInput();
     tracks.length = 0; trains.length = 0; tracksById.clear();
+    objects.length = 0; sketchStrokes.length = 0;
     nextTrackId = 1; nextTrainId = 1; lastTime = null; effects.length = 0;
     railsDirty = true; hint.classList.remove('hidden');
-    status.textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : routeName() + 'の はしから つなげるよ';
+    status.textContent = activeTool === 'erase' ? 'けしたい ものを タッチ！' : routeName() + 'の はしから つなげるよ';
   });
   // A second contact on UI must not leave the first contact edge-scrolling underneath it.
   document.querySelectorAll('[data-drawing-ui]').forEach(control => control.addEventListener('pointerdown', () => {
@@ -608,6 +647,10 @@
     ctx.fillStyle = '#edf1ee'; ctx.fillRect(0, 0, width, height);
     worldTransform(ctx);
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cameraMath.WORLD_WIDTH, cameraMath.WORLD_HEIGHT);
+    for (const object of objects) {
+      window.Scenery.draw(ctx, object, dt);
+      if (eraseTap?.pathId === object.id) { ctx.fillStyle = '#ef77774d'; ctx.fillRect(object.x-object.width/2,object.y-object.height/2,object.width,object.height); }
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.drawImage(railLayer, 0, 0, width, height);
     worldTransform(ctx);
@@ -618,7 +661,7 @@
       ctx.beginPath(); candidate.points.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
       ctx.stroke(); ctx.restore();
     }
-    if (draft && draft.length > 1) {
+    if (activeTool !== 'sketch' && draft && draft.length > 1) {
       if (!draftTrack) draftTrack = worldPath(smooth(draft));
       if (mode === 'road') drawRoad(ctx, draftTrack);
       else drawRails(ctx, draftTrack, true);
@@ -638,6 +681,8 @@
       drawFormation(track, train);
     }
     drawEffects(dt);
+    sketchStrokes.forEach(drawSketch);
+    if (activeTool === 'sketch' && draft) drawSketch(draft);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     requestAnimationFrame(frame);
   }

@@ -31,6 +31,7 @@ let uiPointerDown;
 let overUi = false; const gameStyle = {};
 let clear, home; const zoomOutput = {};
 const guide = { hidden: false };
+const sketchUI = Object.fromEntries(['sketch','sketch-controls','train-picker','redraw','transform'].map(id=>[id,{setAttribute(){},addEventListener(name,fn){this[name]=fn;}}]));
 const eraseButton = { setAttribute(name, value) { this[name] = value; }, addEventListener(name, fn) { this[name] = fn; } };
 const types = ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'];
 const choices = types.map(type => ({
@@ -46,7 +47,7 @@ const modeButtons = ['rail', 'road'].map(mode => ({
 let recordArt = false;
 const artCalls = [];
 const sandbox = {
-  document: { getElementById: id => ({ erase: eraseButton, 'edge-guide': guide, game: { style: { setProperty: (key,value) => { gameStyle[key]=value; } } }, canvas, status, hint, 'hint-text': {}, zoom: zoomOutput, home: { addEventListener: (_, fn) => { home = fn; } }, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
+  document: { getElementById: id => ({ ...sketchUI, erase: eraseButton, 'edge-guide': guide, game: { style: { setProperty: (key,value) => { gameStyle[key]=value; } } }, canvas, status, hint, 'hint-text': {}, zoom: zoomOutput, home: { addEventListener: (_, fn) => { home = fn; } }, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
     elementFromPoint: () => ({ closest: () => overUi }),
     querySelectorAll: selector => selector === '[data-mode]' ? modeButtons : selector === '[data-drawing-ui]' ? [{ addEventListener: (_,fn) => { uiPointerDown=fn; } }] : choices,
     createElement: () => ({ getContext: () => context, addEventListener() {} }),
@@ -59,9 +60,10 @@ let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'
 source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
-    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode, camera, inputState, pointers, railsDirty, dpr, edgePoint, drawingAge, activeTool, eraseTap, tracksById };
+    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode, camera, inputState, pointers, railsDirty, dpr, edgePoint, drawingAge, activeTool, eraseTap, tracksById, sketchStrokes, objects };
 }; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad, drawTrain, screenToWorld, worldToScreen, setCamera, findPathAtPoint, removePath, pathWidth, carAppearance }; })();`);
 vm.createContext(sandbox);
+for(const name of ['recognizer','scenery']) vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../'+name+'.js'),'utf8'),sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../hit.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../edge.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../camera.js'), 'utf8'), sandbox);
@@ -965,3 +967,35 @@ eraseSetup();seed();erasing();rect={left:31,top:7,width:700,height:800};windowEv
 eraseSetup();seed();seed(1,2600);erasing();clear();assert.equal(state().activeTool,'erase');assert.equal(guide.hidden,true);integrity();
 eraseButton.click();seed();assert.equal(state().trains.length,1);integrity();
 console.log('PASS D-01..31/33..40 logic: per-ID deletion, route/body priority, 0.5/1/3x hit radius, all vehicle types/orientations, closed/extended paths, gesture/cancel/slop/resize safety, long edge hold, survivors and cache integrity. D-32 and visual/touch behavior require browser/device QA.');
+
+// v0.3.4: representative recognition plus a small integration smoke, not an accuracy benchmark.
+const recognizer=sandbox.window.SketchRecognizer;
+const pts=pairs=>pairs.map(([x,y])=>({x,y}));
+const ellipse=(cx,cy,rx,ry,petals=0)=>Array.from({length:49},(_,i)=>{const a=i/48*Math.PI*2,r=1+petals*Math.cos(a*6);return{x:cx+Math.cos(a)*rx*r,y:cy+Math.sin(a)*ry*r}});
+const examples={
+ mountain:[pts([[0,90],[55,0],[110,90]])],
+ pond:[ellipse(60,40,60,40)],
+ flower:[ellipse(50,30,25,25,.25),pts([[50,55],[50,100]])],
+ tree:[ellipse(50,30,40,28),pts([[45,58],[45,100],[55,100],[55,58]])],
+ house:[pts([[0,40],[50,0],[100,40],[0,40]]),pts([[10,40],[10,100],[90,100],[90,40]])],
+ station:[pts([[0,25],[20,0],[160,0],[180,25],[0,25]]),pts([[10,25],[10,80],[170,80],[170,25]]),... [35,75,115].map(x=>pts([[x,40],[x+18,40],[x+18,60],[x,60],[x,40]]))]
+};
+for(const [type,strokes] of Object.entries(examples)) {
+ const varied=strokes.slice().reverse().map(st=>st.slice().reverse().map(p=>({x:p.x*1.7+2300,y:p.y*1.7+2400})));
+ assert.equal(recognizer.recognize(varied).type,type);
+}
+assert.equal(recognizer.recognize([[{x:1,y:1}]]),null);
+assert.equal(recognizer.recognize([pts([[0,0],[20,0]])]),null);
+eraseSetup();sketchUI.sketch.click();
+for(const st of examples.house)stroke(st.map(p=>[p.x+2400,p.y+2400]));
+assert.equal(state().sketchStrokes.length,2);assert.equal(state().trains.length,0);
+listeners.pointerdown(event(2450,2450));listeners.pointermove(event(2460,2460));listeners.pointerdown(event(2500,2500,2));
+listeners.pointerup(event(2500,2500,2));listeners.pointerup(event(2460,2460));assert.equal(state().sketchStrokes.length,2);
+setCamera({x:2450,y:2450,zoom:2});sketchUI.transform.click();
+assert.equal(state().objects[0].type,'house');near(state().objects[0].x,2450);near(state().objects[0].y,2450);assert.equal(state().sketchStrokes.length,0);
+tick();erasing();tapWorld({x:2450,y:2450});assert.equal(state().objects.length,0);
+sketchUI.sketch.click();stroke([[2400,2480],[2450,2400],[2500,2480]]);sketchUI.transform.click();assert.equal(state().objects.length,1);
+modeButtons[0].click();stroke([[2400,2450],[2500,2450]]);erasing();tapWorld({x:2450,y:2450});assert.equal(state().tracks.length,0);assert.equal(state().objects.length,1);
+sketchUI.sketch.click();stroke([[2400,2400],[2470,2470]]);sketchUI.redraw.click();assert.equal(state().sketchStrokes.length,0);assert.equal(state().objects.length,1);
+clear();assert.equal(state().objects.length,0);assert.equal(state().sketchStrokes.length,0);
+console.log('PASS M smoke: six representative clouds, translation/scale/order, invalid strokes, multistroke, second contact cancellation, camera, transform bounds, deletion priority, redraw and clear. Real-device accuracy/UI not covered.');
