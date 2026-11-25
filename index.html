@@ -6,11 +6,12 @@
   <meta name="theme-color" content="#16866d">
   <meta name="description" content="線路と道路を描いて、列車や自動車を走らせるお絵描きゲーム。">
   <title>らくがき新幹線</title>
-  <link rel="stylesheet" href="style.css?v=0.3.2">
-  <script src="vehicles.js?v=0.3.2" defer></script>
-  <script src="camera.js?v=0.3.2" defer></script>
-  <script src="edge.js?v=0.3.2" defer></script>
-  <script src="script.js?v=0.3.2" defer></script>
+  <link rel="stylesheet" href="style.css?v=0.3.3">
+  <script src="vehicles.js?v=0.3.3" defer></script>
+  <script src="camera.js?v=0.3.3" defer></script>
+  <script src="edge.js?v=0.3.3" defer></script>
+  <script src="hit.js?v=0.3.3" defer></script>
+  <script src="script.js?v=0.3.3" defer></script>
 </head>
 <body>
   <main id="game" aria-label="らくがき新幹線">
@@ -23,6 +24,7 @@
     <nav id="mode-picker" data-drawing-ui aria-label="描くものを選ぶ">
       <button type="button" data-mode="rail" aria-pressed="true">🚄 せんろ</button>
       <button type="button" data-mode="road" aria-pressed="false">🚗 どうろ</button>
+      <button id="erase" type="button" aria-pressed="false"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 14 14 3l7 7-11 11H7Z" fill="#e9a5ae" stroke="currentColor" stroke-width="1.5"/><path d="m3 14 5-5 7 7-5 5H7Z" fill="#fff" stroke="currentColor" stroke-width="1.5"/></svg>けす</button>
     </nav>
     <nav id="train-picker" data-drawing-ui aria-label="これから描く乗り物を選ぶ">
       <button type="button" class="train-choice" data-train-type="hayabusa" aria-pressed="true"><canvas class="train-icon" width="140" height="80" aria-hidden="true"></canvas><span>はやぶさ</span></button>

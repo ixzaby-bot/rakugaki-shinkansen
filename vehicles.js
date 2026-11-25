@@ -158,5 +158,31 @@
     else shinkansen(c, types[type] ? type : 'hayabusa', role === 'cab');
     c.restore();
   }
-  window.TrainArt = Object.freeze({ types, drawCar });
+  // Local body silhouettes (no touch padding): used only for clear vehicle hits.
+  function containsCar(p, type, role) {
+    const rect = (x, y, w, h) => p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h;
+    const circle = (x, y, r) => Math.hypot(p.x - x, p.y - y) <= r;
+    const spec = types[type];
+    if (spec.kind === 'road') {
+      const half = spec.length / 2;
+      const r = type === 'minivan' ? 7 : 4;
+      const rounded = Math.hypot(Math.max(0, Math.abs(p.x) - half + r), Math.max(0, Math.abs(p.y) - 11 + r)) <= r;
+      return rounded || [-half + 9, half - 12].some(x => rect(x - 3, -14, 7, 4) || rect(x - 3, 10, 7, 4));
+    }
+    if (type === 'd51') {
+      if (rect(-27, 5, 57, 5)) return true;
+      if ((role === 'engine' ? [-15, -2, 11] : [-18, 18]).some(x => circle(x, 10, role === 'engine' ? 5.5 : 4))) return true;
+      return role === 'engine' ? rect(-11, -9, 38, 15) || rect(-25, -15, 17, 20) || rect(-28, -18, 23, 4) ||
+        rect(13, -19, 7, 12) || rect(11, -21, 11, 4) || circle(28, -1, 3) : rect(-26, -13, 52, 20);
+    }
+    const h = spec.half;
+    if (role !== 'cab') return rect(-27, -h, 54, 2 * h);
+    // Tapered approximation stays inside the long nose instead of using its empty bounding corners.
+    const shoulder = spec.nose === 'slender' ? -1 : spec.nose === 'round' ? 13 : spec.nose === 'duckbill' ? 4 : 7;
+    const tip = spec.nose === 'round' ? 28 : 34;
+    if (p.x < -27 || p.x > tip) return false;
+    const half = p.x <= shoulder ? h : h * (tip - p.x) / (tip - shoulder);
+    return Math.abs(p.y) <= half;
+  }
+  window.TrainArt = Object.freeze({ types, drawCar, containsCar });
 })();

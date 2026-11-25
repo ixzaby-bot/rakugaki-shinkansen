@@ -7,7 +7,10 @@
   const hint = document.getElementById('hint');
   const status = document.getElementById('status');
   const trainArt = window.TrainArt;
-  let mode = 'rail', selectedType = 'hayabusa';
+  let mode = 'rail', selectedType = 'hayabusa', activeTool = 'draw';
+  let eraseTap = null;
+  const hitTest = window.PathHit;
+  const eraseButton = document.getElementById('erase');
   const selections = { rail: 'hayabusa', road: 'police' };
   const catalogs = { rail: ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'],
     road: ['police', 'fire', 'ambulance', 'bus', 'minivan'] };
@@ -26,21 +29,28 @@
       icon.setTransform(2, 0, 0, 2, 64, 46);
       trainArt.drawCar(icon, type, type === 'd51' ? 'engine' : 'cab');
     });
-    modeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === mode)));
-    document.getElementById('hint-text').textContent = 'ゆびで ' + routeName() + 'を かいてみよう！';
+    modeButtons.forEach(button => button.setAttribute('aria-pressed', String(activeTool === 'draw' && button.dataset.mode === mode)));
+    eraseButton.setAttribute('aria-pressed', String(activeTool === 'erase'));
+    document.getElementById('edge-guide').hidden = activeTool === 'erase';
+    document.getElementById('hint-text').textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : 'ゆびで ' + routeName() + 'を かいてみよう！';
   }
   choices.forEach(button => button.addEventListener('click', () => {
     selectedType = button.dataset.trainType;
     selections[mode] = selectedType;
     refreshChoices();
-    status.textContent = trainArt.types[selectedType].name + 'で かこう！';
+    status.textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : trainArt.types[selectedType].name + 'で かこう！';
   }));
   modeButtons.forEach(button => button.addEventListener('click', () => {
-    if (button.dataset.mode === mode) return;
     cancelInput();
+    activeTool = 'draw';
     mode = button.dataset.mode; selectedType = selections[mode];
     refreshChoices(); status.textContent = routeName() + 'の はしから つなげるよ';
   }));
+  eraseButton.addEventListener('click', () => {
+    cancelInput(); activeTool = activeTool === 'draw' ? 'erase' : 'draw';
+    refreshChoices();
+    status.textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : routeName() + 'の はしから つなげるよ';
+  });
   // Shared route/vehicle arrays: kind filters topology, IDs remain globally unique.
   const tracks = [];
   const trains = [];
@@ -222,7 +232,7 @@
     if (closed) train.distance = ((train.distance % track.length) + track.length) % track.length;
     else train.distance = Math.max(0, Math.min(formation(track, train).travel, train.distance));
     Object.assign(old, track);
-    for (const hit of [first, last].filter(Boolean)) effects.push({ ...hit.point, age: 0 });
+    for (const hit of [first, last].filter(Boolean)) effects.push({ ...hit.point, age: 0, trackId: old.id });
     status.textContent = closed ? 'つながった！ ぐるぐる はしるよ' : 'つながった！ もっと はしれるよ';
   }
 
@@ -307,13 +317,17 @@
     }
   }
 
-  function drawTrain(p, index, count, scale, train) {
+  function carAppearance(index, count, train) {
     const steam = train.type === 'd51';
     const road = trainArt.types[train.type].kind === 'road';
     // Keep the locomotive on the same physical car: reverse running pushes coaches.
     const role = steam ? (index === count - 1 ? 'engine' : 'coach') :
       (index === 0 || index === count - 1 ? 'cab' : 'coach');
     const reverse = steam || road ? train.direction < 0 : index === 0 && count > 1;
+    return { role, reverse };
+  }
+  function drawTrain(p, index, count, scale, train) {
+    const { role, reverse } = carAppearance(index, count, train);
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.angle + (reverse ? Math.PI : 0));
@@ -338,10 +352,64 @@
     poses.forEach((p, i) => drawTrain(p, i, f.count, f.scale, train));
   }
 
+  function pathWidth(track) { return track.kind === 'road' ? 36 * formation(track).scale : 26; }
+  // Vehicle bodies take priority; reverse iteration matches the visible drawing order.
+  function findPathAtPoint(world) {
+    const screen = worldToScreen(world);
+    if (!usablePoint(screen)) return null;
+    for (let i = trains.length - 1; i >= 0; i--) {
+      const train = trains[i], track = tracksById.get(train.trackId);
+      if (!track) continue;
+      const f = formation(track, train), poses = carPoses(track, train.distance, train);
+      for (let j = poses.length - 1; j >= 0; j--) {
+        const p = poses[j], { role, reverse } = carAppearance(j, f.count, train);
+        const angle = p.angle + (reverse ? Math.PI : 0), dx = world.x - p.x, dy = world.y - p.y;
+        const local = { x: (dx * Math.cos(angle) + dy * Math.sin(angle)) / f.scale,
+          y: (-dx * Math.sin(angle) + dy * Math.cos(angle)) / f.scale };
+        if (trainArt.containsCar(local, train.type, role)) return track;
+      }
+    }
+    const hits = tracks.map((track, order) => ({ track, order, gap: hitTest.pathDistance(world, track) }))
+      .filter(h => h.gap <= pathWidth(h.track) / 2 + hitTest.PADDING / camera.zoom);
+    if (!hits.length) return null;
+    const nearest = Math.min(...hits.map(h => h.gap));
+    // Apply a fixed tie band relative to the minimum, avoiding a non-transitive comparator.
+    const tied = hits.filter(h => (h.gap - nearest) * camera.zoom <= hitTest.TIE);
+    tied.sort((a, b) => Number(b.track.kind === mode) - Number(a.track.kind === mode) ||
+      Number(b.track.kind === 'rail') - Number(a.track.kind === 'rail') || b.order - a.order);
+    return tied[0].track;
+  }
+  function removePath(id) {
+    const index = tracks.findIndex(track => track.id === id);
+    if (index < 0) return false;
+    for (let i = trains.length - 1; i >= 0; i--) if (trains[i].trackId === id) trains.splice(i, 1);
+    tracks.splice(index, 1); tracksById.delete(id);
+    for (let i = effects.length - 1; i >= 0; i--) if (effects[i].trackId === id) effects.splice(i, 1);
+    if (eraseTap?.pathId === id) eraseTap = null;
+    railsDirty = true;
+    hint.classList.toggle('hidden', tracks.length > 0);
+    status.textContent = 'けしたよ！ つぎも タッチで けせるよ';
+    return true;
+  }
+  function usablePoint(p) {
+    if (p.x < 0 || p.y < 0 || p.x > width || p.y > height) return false;
+    const rect = canvas.getBoundingClientRect();
+    return !document.elementFromPoint(p.x + rect.left, p.y + rect.top)?.closest?.('[data-drawing-ui]');
+  }
+  function updateEraseTap(event) {
+    if (!eraseTap) return;
+    const samples = event.getCoalescedEvents ? event.getCoalescedEvents() : [];
+    for (const sample of [...samples, event]) {
+      const p = screenPoint(sample);
+      if (!usablePoint(p) || separation(p, eraseTap.start) > hitTest.TAP_SLOP) { eraseTap = null; break; }
+    }
+  }
+
   function resize() {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     width = rect.width; height = rect.height;
+    eraseTap = null; // A resize during a contact cannot confirm deletion.
     edgePoint = null; // A stationary contact must be reported again after viewport changes.
     dpr = Math.min(window.devicePixelRatio || 1, 3);
     for (const surface of [canvas, railLayer]) {
@@ -369,6 +437,7 @@
   function stopEdge() { edgePoint = null; drawingAge = 0; }
   function cancelInput() {
     stopEdge();
+    eraseTap = null;
     draft = null; draftTrack = null; pointerId = null; gesture = null;
     inputState = pointers.size ? 'cameraGesture' : 'idle';
     hint.classList.toggle('hidden', tracks.length > 0);
@@ -381,6 +450,7 @@
   }
   function beginGesture() {
     stopEdge();
+    eraseTap = null;
     draft = null; draftTrack = null; pointerId = null;
     inputState = 'cameraGesture';
     const pair = [...pointers.entries()].slice(0, 2);
@@ -399,6 +469,14 @@
   }
   function finish(event, cancelled = false) {
     if (!pointers.has(event.pointerId)) return;
+    if (inputState === 'erasing') {
+      updateEraseTap(event);
+      if (!cancelled && eraseTap && pointers.size === 1 && usablePoint(screenPoint(event))) {
+        const target = findPathAtPoint(screenToWorld(screenPoint(event)));
+        if (target && target.id === eraseTap.pathId) removePath(target.id);
+      }
+      eraseTap = null;
+    }
     if (inputState === 'drawing' && event.pointerId === pointerId && draft) {
       stopEdge();
       if (!cancelled) append(event);
@@ -432,6 +510,12 @@
       return;
     }
     if (inputState !== 'idle') return;
+    if (activeTool === 'erase') {
+      inputState = 'erasing';
+      const start = screenPoint(event);
+      eraseTap = usablePoint(start) ? { start, pathId: findPathAtPoint(screenToWorld(start))?.id } : null;
+      return;
+    }
     inputState = 'drawing'; pointerId = event.pointerId;
     drawingAge = 0; edgePoint = screenPoint(event);
     draft = [point(event)]; draftTrack = null; hint.classList.add('hidden');
@@ -440,6 +524,7 @@
     if (!pointers.has(event.pointerId)) return;
     event.preventDefault(); pointers.set(event.pointerId, screenPoint(event));
     if (inputState === 'cameraGesture') { moveGesture(); return; }
+    if (inputState === 'erasing') { updateEraseTap(event); return; }
     if (event.pointerId !== pointerId || !draft) return;
     edgePoint = screenPoint(event);
     const events = event.getCoalescedEvents ? event.getCoalescedEvents() : [];
@@ -458,7 +543,7 @@
     tracks.length = 0; trains.length = 0; tracksById.clear();
     nextTrackId = 1; nextTrainId = 1; lastTime = null; effects.length = 0;
     railsDirty = true; hint.classList.remove('hidden');
-    status.textContent = routeName() + 'の はしから つなげるよ';
+    status.textContent = activeTool === 'erase' ? 'けしたい せんろや どうろを タッチ！' : routeName() + 'の はしから つなげるよ';
   });
   // A second contact on UI must not leave the first contact edge-scrolling underneath it.
   document.querySelectorAll('[data-drawing-ui]').forEach(control => control.addEventListener('pointerdown', () => {
@@ -526,6 +611,13 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.drawImage(railLayer, 0, 0, width, height);
     worldTransform(ctx);
+    const candidate = eraseTap && tracksById.get(eraseTap.pathId);
+    if (candidate) {
+      ctx.save(); ctx.strokeStyle = '#ef7777'; ctx.globalAlpha = .3;
+      ctx.lineWidth = pathWidth(candidate) + 8 / camera.zoom; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath(); candidate.points.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.stroke(); ctx.restore();
+    }
     if (draft && draft.length > 1) {
       if (!draftTrack) draftTrack = worldPath(smooth(draft));
       if (mode === 'road') drawRoad(ctx, draftTrack);

@@ -30,6 +30,8 @@ const hint = { classList: { add() {}, remove() {}, toggle() {} } };
 let uiPointerDown;
 let overUi = false; const gameStyle = {};
 let clear, home; const zoomOutput = {};
+const guide = { hidden: false };
+const eraseButton = { setAttribute(name, value) { this[name] = value; }, addEventListener(name, fn) { this[name] = fn; } };
 const types = ['hayabusa', 'komachi', 'kagayaki', 'nozomi', 'd51'];
 const choices = types.map(type => ({
   dataset: { trainType: type }, pressed: String(type === 'hayabusa'),
@@ -44,7 +46,7 @@ const modeButtons = ['rail', 'road'].map(mode => ({
 let recordArt = false;
 const artCalls = [];
 const sandbox = {
-  document: { getElementById: id => ({ game: { style: { setProperty: (key,value) => { gameStyle[key]=value; } } }, canvas, status, hint, 'hint-text': {}, zoom: zoomOutput, home: { addEventListener: (_, fn) => { home = fn; } }, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
+  document: { getElementById: id => ({ erase: eraseButton, 'edge-guide': guide, game: { style: { setProperty: (key,value) => { gameStyle[key]=value; } } }, canvas, status, hint, 'hint-text': {}, zoom: zoomOutput, home: { addEventListener: (_, fn) => { home = fn; } }, clear: { addEventListener: (_, fn) => { clear = fn; } } })[id],
     elementFromPoint: () => ({ closest: () => overUi }),
     querySelectorAll: selector => selector === '[data-mode]' ? modeButtons : selector === '[data-drawing-ui]' ? [{ addEventListener: (_,fn) => { uiPointerDown=fn; } }] : choices,
     createElement: () => ({ getContext: () => context, addEventListener() {} }),
@@ -57,9 +59,10 @@ let source = fs.readFileSync(require('node:path').join(__dirname, '../script.js'
 source = source.replace(/\}\)\(\);\s*$/, `globalThis.inspect = () => {
   const train = trains[trains.length - 1];
   return { tracks, trains, active: train ? tracksById.get(train.trackId) : null,
-    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode, camera, inputState, pointers, railsDirty, dpr, edgePoint, drawingAge };
-}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad, drawTrain, screenToWorld, worldToScreen, setCamera }; })();`);
+    distance: train?.distance || 0, direction: train?.direction || 1, draft, pointerId, width, height, effects, selectedType, mode, camera, inputState, pointers, railsDirty, dpr, edgePoint, drawingAge, activeTool, eraseTap, tracksById };
+}; globalThis.testing = { formation, carPoses, smooth, sample, measure, endpointNear, CONNECT_RADIUS, ROAD_CONNECT_RADIUS, drawRoad, drawTrain, screenToWorld, worldToScreen, setCamera, findPathAtPoint, removePath, pathWidth, carAppearance }; })();`);
 vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../hit.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../edge.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../camera.js'), 'utf8'), sandbox);
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../vehicles.js'), 'utf8'), sandbox);
@@ -852,3 +855,113 @@ const mixedEdgeBefore=state().trains.map(t=>t.distance),edgeRequests=animationRe
 cssDown(320,280);advance(30);state().trains.forEach((t,i)=>assert.notEqual(t.distance,mixedEdgeBefore[i]));
 assert.equal(animationRequests-edgeRequests,30);listeners.pointercancel(cssEvent(320,280));assert.equal(state().trains.length,10);
 console.log('PASS E-01..23/25..29 logic: delay, 4 edges/diagonal, stationary points, quadratic speed, 0.5/1/3x, 10/20/100 FPS, boundary, UI/cancel/gesture, extension IDs, rotation, recovery and mixed vehicles. E-24/30..35 require browser/device checks; long suspension remains unverified.');
+
+// v0.3.3: erasing is a single-contact transaction, never a pointerdown mutation.
+const { findPathAtPoint, removePath, pathWidth } = sandbox.testing;
+const geometry = sandbox.window.PathHit;
+function eraseSetup() {
+  clear(); modeButtons[0].click(); home(); overUi=false;
+  rect={left:17,top:29,width:800,height:700}; windowEvents.resize();
+}
+function tapWorld(p) { listeners.pointerdown(event(p.x,p.y)); listeners.pointerup(event(p.x,p.y)); }
+function seed(kind=0,y=2500) { modeButtons[kind].click(); stroke([[2200,y],[2800,y]]); return state().tracks.at(-1); }
+function erasing() { if(state().activeTool!=='erase') eraseButton.click(); }
+function integrity() {
+  assert.equal(state().tracks.length,state().trains.length);
+  assert.equal(state().tracksById.size,state().tracks.length);
+  assert.equal(new Set(state().tracks.map(t=>t.id)).size,state().tracks.length);
+  state().trains.forEach(t=>assert.ok(state().tracksById.has(t.trackId)));
+}
+eraseSetup();assert.equal(state().activeTool,'draw');assert.equal(guide.hidden,false);
+const railA=seed(),roadA=seed(1,2600);choices[3].click();erasing();
+assert.equal(eraseButton['aria-pressed'],'true');assert.equal(guide.hidden,true);
+assert.equal(state().selectedType,'bus');assert.equal(state().mode,'road');
+const untouched=JSON.stringify({track:roadA,train:state().trains[1]});
+listeners.pointerdown(event(2600,2500));assert.equal(state().tracks.length,2);assert.equal(state().eraseTap.pathId,railA.id);
+listeners.pointerup(event(2600,2500));assert.equal(state().tracks.length,1);
+assert.equal(JSON.stringify({track:roadA,train:state().trains[0]}),untouched);integrity();
+tapWorld({x:2500,y:2400});assert.equal(state().tracks.length,1);
+tapWorld({x:2600,y:2600});assert.equal(state().tracks.length,0);assert.equal(state().activeTool,'erase');integrity();
+assert.equal(removePath(railA.id),false);
+eraseButton.click();assert.equal(guide.hidden,false);assert.equal(state().selectedType,'bus');
+seed();erasing();modeButtons[0].click();assert.equal(state().activeTool,'draw');assert.equal(guide.hidden,false);
+// Radius uses the visible width + 12 CSS px at every zoom; geometry uses segment interiors.
+for(const zoom of [.5,1,3]) for(const kind of [0,1]) {
+  eraseSetup();const route=seed(kind);setCamera({x:2600,y:2500,zoom});
+  const radius=pathWidth(route)/2+12/zoom;
+  assert.equal(findPathAtPoint({x:2600,y:2500+radius-.001})?.id,route.id);
+  assert.equal(findPathAtPoint({x:2600,y:2500+radius+.001}),null);
+  erasing();tapWorld({x:2600,y:2500});assert.equal(state().tracks.length,0);integrity();
+}
+near(geometry.distanceToSegment({x:3,y:4},{x:0,y:0},{x:0,y:0}),5);
+near(geometry.distanceToSegment({x:50,y:5},{x:0,y:0},{x:100,y:0}),5);
+near(geometry.pathDistance({x:50,y:50},{closed:true,points:[{x:0,y:0},{x:100,y:0},{x:100,y:100}]}),0);
+// Closed paths of either kind and extended paths disappear as one ID.
+for(const kind of [0,1]) {
+  eraseSetup();modeButtons[kind].click();
+  stroke([[2400,2400],[2600,2400],[2600,2600],[2400,2600],[2400,2400]]);
+  const route=state().tracks[0];assert.equal(route.closed,true);erasing();tapWorld(route.points.at(-1));integrity();assert.equal(state().tracks.length,0);
+  modeButtons[kind].click();const extended=seed(kind);stroke([[2800,2500],[2900,2500]]);
+  assert.equal(state().tracks.length,1);assert.ok(extended.length>600);erasing();tapWorld({x:2600,y:2500});assert.equal(state().tracks.length,0);
+}
+// Nearest first, then selected kind, then frontmost same-kind path. Vehicles are away from taps.
+eraseSetup();const crossRail=seed();modeButtons[1].click();stroke([[2600,2200],[2600,2800]]);
+const crossRoad=state().tracks.at(-1);assert.equal(findPathAtPoint({x:2600,y:2500}).id,crossRoad.id);
+modeButtons[0].click();assert.equal(findPathAtPoint({x:2600,y:2500}).id,crossRail.id);
+erasing();tapWorld({x:2600,y:2500});assert.equal(state().tracks.length,1);integrity();
+eraseSetup();const nearA=seed();const nearB=seed(0,2530);
+assert.equal(findPathAtPoint({x:2600,y:2520}).id,nearB.id);
+assert.equal(findPathAtPoint({x:2600,y:2515}).id,nearB.id);
+assert.equal(findPathAtPoint({x:2600,y:2514}).id,nearA.id);
+// Every car in every type, with rotated poses and reverse orientation. Body wins over a crossing route.
+for(const kind of [0,1]) for(let type=0;type<5;type++) for(const direction of [-1,1]) {
+  eraseSetup();modeButtons[kind].click();choices[type].click();stroke([[2250,2250],[2750,2750]]);
+  const route=state().tracks[0],train=state().trains[0];train.direction=direction;
+  for(const pose of carPoses(route,train.distance,train)) assert.equal(findPathAtPoint(pose)?.id,route.id);
+  const pose=carPoses(route,train.distance,train).at(-1);erasing();tapWorld(pose);assert.equal(state().trains.length,0);
+}
+eraseSetup();const bodyRoute=seed();const bodyTrain=state().trains[0];const bodyPose=carPoses(bodyRoute,bodyTrain.distance,bodyTrain)[1];
+modeButtons[1].click();stroke([[bodyPose.x,2200],[bodyPose.x,2800]]);
+assert.equal(findPathAtPoint(bodyPose).id,bodyRoute.id); // selected road loses to visible rail body.
+assert.equal(findPathAtPoint({x:0,y:0}),null); // outside viewport cannot select offscreen vehicles.
+// A second finger, cancelled capture, UI, resize, coalesced excursions, or leave-and-return cancels.
+for(const action of ['two','cancel','lost','move','coalesced','outside','mode','ui','resize','restore']) {
+  eraseSetup();seed();erasing();const p={x:2600,y:2500};listeners.pointerdown(event(p.x,p.y));
+  if(action==='two') {
+    listeners.pointerdown(event(2650,2500,2));assert.equal(state().eraseTap,null);
+    listeners.pointermove(event(2700,2550,2));assert.equal(state().inputState,'cameraGesture');
+    listeners.pointerup(event(2700,2550,2));listeners.pointermove(event(2600,2500));
+  } else if(action==='cancel') listeners.pointercancel(event(p.x,p.y));
+  else if(action==='lost') listeners.lostpointercapture(event(p.x,p.y));
+  else if(action==='move') { listeners.pointermove(event(2620,2500));listeners.pointermove(event(2600,2500)); }
+  else if(action==='coalesced') { const e=event(2600,2500);e.getCoalescedEvents=()=>[event(2620,2500)];listeners.pointermove(e); }
+  else if(action==='outside') { cssMove(-1,100);listeners.pointermove(event(2600,2500)); }
+  else if(action==='mode') modeButtons[1].click();
+  else if(action==='ui') uiPointerDown();
+  else if(action==='resize') windowEvents.resize();
+  else documentEvents.visibilitychange();
+  assert.equal(state().eraseTap,null);listeners.pointerup(event(p.x,p.y));assert.equal(state().tracks.length,1);integrity();
+}
+// Up-only movement counts; target changing while held must not delete a different path.
+eraseSetup();seed();erasing();listeners.pointerdown(event(2600,2500));listeners.pointerup(event(2620,2500));assert.equal(state().tracks.length,1);
+eraseSetup();seed();stroke([[2300,2510],[2700,2510]]);erasing();listeners.pointerdown(event(2600,2500));listeners.pointerup(event(2600,2510));assert.equal(state().tracks.length,2);
+// Edge hold does not move camera or delete before release, guide stays hidden.
+eraseSetup();seed();erasing();setCamera({x:2200+400-5,y:2500,zoom:1});
+const heldCamera=JSON.stringify(state().camera);cssDown(5,350);advance(150);
+assert.equal(JSON.stringify(state().camera),heldCamera);assert.equal(state().tracks.length,1);assert.equal(guide.hidden,true);
+cssUp(5,350);assert.equal(state().tracks.length,0);integrity();
+eraseButton.click();cssDown(0,350);advance(40);assert.notEqual(JSON.stringify(state().camera),heldCamera);listeners.pointercancel(cssEvent(0,350));
+// Delete one of 10 mixed routes, preserve other nine byte-for-byte, then keep running and extend.
+eraseSetup();for(let i=0;i<10;i++){modeButtons[i%2].click();choices[i%5].click();stroke([[2200,2200+i*60],[2800,2200+i*60]]);}
+const doomed=state().tracks[4].id;
+const survivors=JSON.stringify({tracks:state().tracks.filter(t=>t.id!==doomed),trains:state().trains.filter(t=>t.trackId!==doomed)});
+assert.equal(removePath(doomed),true);assert.equal(JSON.stringify({tracks:state().tracks,trains:state().trains}),survivors);integrity();
+const progress=state().trains.map(t=>t.distance);tick(20);state().trains.forEach((t,i)=>assert.notEqual(t.distance,progress[i]));
+modeButtons[0].click();const survivor=state().tracks[0],vehicle=state().trains[0];stroke([[2800,2200],[2900,2200]]);assert.equal(state().tracks[0],survivor);assert.equal(state().trains[0],vehicle);
+const lastId=Math.max(...state().tracks.map(t=>t.id));stroke([[2300,2850],[2700,2850]]);assert.ok(state().tracks.at(-1).id>lastId);
+// Offscreen vehicle is deleted with a visible distant segment; post-rotation coordinate mapping.
+eraseSetup();const far=seed();setCamera({x:2800,y:2500,zoom:3});erasing();tapWorld({x:2780,y:2500});assert.equal(state().trains.length,0);
+eraseSetup();seed();erasing();rect={left:31,top:7,width:700,height:800};windowEvents.resize();tapWorld({x:2600,y:2500});assert.equal(state().tracks.length,0);
+eraseSetup();seed();seed(1,2600);erasing();clear();assert.equal(state().activeTool,'erase');assert.equal(guide.hidden,true);integrity();
+eraseButton.click();seed();assert.equal(state().trains.length,1);integrity();
+console.log('PASS D-01..31/33..40 logic: per-ID deletion, route/body priority, 0.5/1/3x hit radius, all vehicle types/orientations, closed/extended paths, gesture/cancel/slop/resize safety, long edge hold, survivors and cache integrity. D-32 and visual/touch behavior require browser/device QA.');
